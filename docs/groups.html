@@ -1,0 +1,599 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>แบ่งกลุ่มนักศึกษา ป.จว.</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@400;600;700&display=swap" rel="stylesheet">
+<script src="config.js"></script>
+<style>
+  :root {
+    --bg: #f5f6f8; --card: #fff; --ink: #1d2733; --muted: #6b7785; --line: #e1e5ea; --grid: #e8ebef;
+    --brand: #1f3b57; --accent: #2f7d6d; --danger: #b3412f; --hl: #fff6d6;
+    --c-green:#d9f2df; --c-blue:#dbe8fb; --c-orange:#fde5cf; --c-purple:#ebdff8; --c-teal:#d5f1ef; --c-magenta:#f9dcec; --c-yellow:#fbf0c7; --c-red:#fbdcdc; --c-gray:#e9ecef;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#14181d; --card:#1d232a; --ink:#e7ebef; --muted:#9aa6b2; --line:#2e3640; --grid:#283039; --brand:#8fb6dc; --accent:#3f9c89; --hl:#3a3420;
+      --c-green:#25402c; --c-blue:#22344d; --c-orange:#4a3420; --c-purple:#382a4a; --c-teal:#1f403d; --c-magenta:#4a2539; --c-yellow:#4a4120; --c-red:#4a2525; --c-gray:#2c333b; }
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  body { margin: 0; font-family: Sarabun, system-ui, sans-serif; background: var(--bg); color: var(--ink); font-size: 15px; }
+  input, select, button, textarea { font: inherit; color: inherit; }
+  input, select, textarea { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; width: 100%; }
+  button { border: 1px solid var(--line); background: var(--card); border-radius: 8px; padding: 7px 14px; cursor: pointer; white-space: nowrap; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.danger { color: var(--danger); }
+  button.icon { padding: 2px 7px; font-size: 13px; background: transparent; border-color: transparent; }
+  button.icon:hover { border-color: var(--line); background: var(--card); }
+  button:disabled { opacity: .5; cursor: wait; }
+
+  header { padding: 18px 20px 10px; display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; }
+  h1 { margin: 0; font-size: 22px; color: var(--brand); }
+  #appSub { color: var(--muted); font-size: 14px; }
+  .who { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+  .badge { font-size: 13px; padding: 3px 10px; border-radius: 99px; background: var(--c-blue); }
+  .badge.admin { background: var(--c-red); } .badge.teacher { background: var(--c-green); } .badge.ta { background: var(--c-yellow); }
+
+  .toolbar { display: flex; flex-wrap: wrap; gap: 8px; padding: 0 20px 10px; align-items: center; }
+  .toolbar input, .toolbar select { width: auto; }
+  #search { min-width: 220px; flex: 1 1 220px; max-width: 340px; }
+  #count { font-size: 14px; color: var(--muted); }
+  #status { font-size: 14px; color: var(--muted); margin-left: auto; }
+  #status.bad { color: var(--danger); }
+  .banner { margin: 0 20px 10px; padding: 10px 14px; border-radius: 10px; background: var(--hl); font-size: 14.5px; }
+
+  /* ── ตารางแบบ Sheet ── */
+  .sheet { margin: 0 20px 40px; background: var(--card); border: 1px solid var(--line); border-radius: 10px; overflow: auto; max-height: calc(100vh - 150px); }
+  table { border-collapse: separate; border-spacing: 0; width: 100%; font-size: 14px; }
+  th, td { border-right: 1px solid var(--grid); border-bottom: 1px solid var(--grid); padding: 6px 10px; text-align: left; vertical-align: middle; }
+  th { position: sticky; top: 0; z-index: 2; background: var(--brand); color: #fff; font-weight: 600; white-space: nowrap; cursor: pointer; user-select: none; }
+  th .arrow { opacity: .7; font-size: 11px; margin-left: 4px; }
+  th.rn, td.rn { width: 44px; text-align: center; color: var(--muted); background: var(--bg); position: sticky; left: 0; z-index: 1; cursor: default; }
+  th.rn { z-index: 3; background: var(--brand); color: #fff; }
+  td.name { font-weight: 600; min-width: 220px; }
+  td.occ { min-width: 240px; color: var(--muted); }
+  td.nw { white-space: nowrap; }
+  tbody tr:hover td { background: color-mix(in srgb, var(--bg) 60%, transparent); }
+  tbody tr.me td { background: var(--hl); }
+  tr.hide { display: none; }
+  .pill { display: inline-block; padding: 1px 10px; border-radius: 99px; font-size: 13px; white-space: nowrap; }
+  td input, td select { border-color: transparent; background: transparent; padding: 3px 6px; min-width: 100px; border-radius: 6px; }
+  td input:hover, td select:hover { border-color: var(--line); }
+  td input:focus, td select:focus { border-color: var(--accent); background: var(--card); outline: none; }
+  td.saving input, td.saving select { background: var(--c-yellow); }
+  td.saved input, td.saved select { background: var(--c-green); transition: background 1s; }
+  .empty { padding: 30px; text-align: center; color: var(--muted); }
+
+  /* ── dialogs ── */
+  dialog { border: 1px solid var(--line); border-radius: 14px; background: var(--card); color: var(--ink); width: min(560px, 94vw); padding: 22px; }
+  dialog.wide { width: min(760px, 96vw); }
+  dialog::backdrop { background: rgba(0,0,0,.4); }
+  dialog h2 { margin: 0 0 12px; font-size: 19px; }
+  dialog h3 { margin: 18px 0 8px; font-size: 15px; color: var(--muted); }
+  .form { display: grid; grid-template-columns: 170px 1fr; gap: 8px 12px; align-items: center; }
+  .form label { color: var(--muted); font-size: 14px; }
+  .form textarea { min-height: 84px; resize: vertical; }
+  .actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; flex-wrap: wrap; }
+  .actions .left { margin-right: auto; }
+  .note { font-size: 13px; color: var(--muted); margin-top: 8px; }
+  .mini td, .mini th { padding: 4px 6px; }
+  .mini th { position: static; cursor: default; }
+  .mini td input { min-width: 0; border-color: var(--line); }
+
+  /* login */
+  #dlgLogin { width: min(420px, 94vw); }
+  #dlgLogin label { display: block; font-weight: 600; margin-bottom: 6px; }
+  .pw { position: relative; }
+  .pw input { padding-right: 46px; font-size: 17px; letter-spacing: .03em; }
+  .pw .eye { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); border: 0; background: transparent; padding: 6px 8px; color: var(--muted); display: grid; place-items: center; }
+  .pw .eye:hover { color: var(--ink); }
+  .pw .eye svg { width: 22px; height: 22px; }
+  .hints { margin: 10px 0 16px; padding: 0; list-style: none; font-size: 13.5px; color: var(--muted); display: grid; gap: 3px; }
+  .hints b { color: var(--ink); font-weight: 600; }
+  #btnLogin { width: 100%; padding: 10px; font-size: 16px; }
+  .err { color: var(--danger); font-size: 14px; min-height: 20px; margin-top: 10px; }
+  @media (max-width: 560px) { .form { grid-template-columns: 1fr; } header, .toolbar { padding-left: 12px; padding-right: 12px; } .sheet, .banner { margin-left: 12px; margin-right: 12px; } }
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1 id="appTitle">แบ่งกลุ่มนักศึกษา ป.จว.</h1>
+    <div id="appSub"></div>
+  </div>
+  <div class="who">
+    <span id="whoBox" hidden><span class="badge" id="roleBadge"></span> <span id="whoName"></span></span>
+    <button id="btnOpenLogin" class="primary">เข้าสู่ระบบ</button>
+    <button id="btnLogout" hidden>ออกจากระบบ</button>
+  </div>
+</header>
+
+<div class="toolbar">
+  <input id="search" type="search" placeholder="ค้นหา…">
+  <select id="filterGroup"></select>
+  <select id="filterCareer"></select>
+  <span id="count"></span>
+  <button id="btnAdd" class="primary" hidden>+ เพิ่มนักศึกษา</button>
+  <button id="btnGroups" hidden>จัดการกลุ่ม</button>
+  <button id="btnUsers" hidden>อาจารย์ / TA</button>
+  <button id="btnConfig" hidden>ตั้งค่าข้อความ</button>
+  <button id="btnReload">โหลดใหม่</button>
+  <span id="status"></span>
+</div>
+
+<div class="banner" id="banner" hidden></div>
+<div class="sheet"><table><thead id="thead"></thead><tbody id="tbody"><tr><td class="empty">กำลังโหลด…</td></tr></tbody></table></div>
+
+<!-- ═════════ เข้าสู่ระบบ ═════════ -->
+<dialog id="dlgLogin">
+  <form id="loginForm" autocomplete="off">
+    <h2>เข้าสู่ระบบ</h2>
+    <label for="code">รหัสเข้าใช้งาน</label>
+    <div class="pw">
+      <input id="code" type="password" autocomplete="current-password" autocapitalize="characters" spellcheck="false" placeholder="ใส่รหัส">
+      <button type="button" class="eye" id="eye"></button>
+    </div>
+    <ul class="hints">
+      <li><b>นิสิต</b> — เลขที่ เช่น 01-043 (เมื่อได้รหัสนิสิต 10 หลักแล้ว ให้ใช้รหัสนิสิตแทน)</li>
+      <li><b>อาจารย์ผู้สอน</b> — รหัส 4 หลัก เช่น 6901</li>
+      <li><b>TA ผู้ช่วย</b> — TA ตามด้วย 4 หลัก เช่น TA6901</li>
+      <li><b>ผู้ดูแลระบบ</b> — รหัสผ่านผู้ดูแล</li>
+    </ul>
+    <button class="primary" id="btnLogin" type="submit">เข้าสู่ระบบ</button>
+    <div class="err" id="loginErr"></div>
+    <div class="actions" style="margin-top:4px">
+      <button type="button" class="left icon" id="lnkServer">ตั้งค่าเซิร์ฟเวอร์</button>
+      <button type="button" id="btnLoginCancel">ปิด</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- ═════════ เพิ่มนักศึกษา ═════════ -->
+<dialog id="dlgAdd">
+  <h2>เพิ่มนักศึกษา</h2>
+  <form id="addForm" class="form" onsubmit="return false"></form>
+  <div class="actions">
+    <button id="btnAddCancel">ยกเลิก</button>
+    <button class="primary" id="btnAddSave">บันทึก</button>
+  </div>
+</dialog>
+
+<!-- ═════════ จัดการกลุ่ม ═════════ -->
+<dialog id="dlgGroups">
+  <h2>จัดการกลุ่ม</h2>
+  <table class="mini"><thead><tr><th>กลุ่ม</th><th>สมาชิก</th><th></th></tr></thead><tbody id="groupsBody"></tbody></table>
+  <p class="note">ลบได้เฉพาะกลุ่มที่ไม่มีสมาชิก · เปลี่ยนชื่อกลุ่มแล้วสมาชิกทุกคนจะย้ายตามชื่อใหม่</p>
+  <div class="actions">
+    <button class="left" id="btnGroupAdd">+ เพิ่มกลุ่ม</button>
+    <button id="btnGroupsClose">ปิด</button>
+  </div>
+</dialog>
+
+<!-- ═════════ อาจารย์ / TA ═════════ -->
+<dialog id="dlgUsers" class="wide">
+  <h2>อาจารย์ผู้สอน และ TA ผู้ช่วย</h2>
+  <div style="overflow:auto;max-height:55vh">
+    <table class="mini"><thead><tr><th style="width:130px">รหัส</th><th>ชื่อ-นามสกุล</th><th>หมายเหตุ</th><th>บทบาท</th><th></th></tr></thead><tbody id="usersBody"></tbody></table>
+  </div>
+  <p class="note">อาจารย์: ตัวเลข 4 หลัก (เช่น 6901) · TA: TA + ตัวเลข 4 หลัก (เช่น TA6901)</p>
+  <div class="actions">
+    <button class="left" id="btnUserAdd">+ เพิ่มแถว</button>
+    <button id="btnUsersCancel">ยกเลิก</button>
+    <button class="primary" id="btnUsersSave">บันทึก</button>
+  </div>
+</dialog>
+
+<!-- ═════════ ตั้งค่าข้อความ ═════════ -->
+<dialog id="dlgConfig" class="wide">
+  <h2>ตั้งค่าข้อความและตัวเลือก</h2>
+  <div style="overflow:auto;max-height:65vh">
+    <h3>หัวเรื่อง</h3>
+    <div class="form">
+      <label>ชื่อระบบ</label><input id="cfgTitle">
+      <label>คำอธิบายใต้ชื่อ</label><input id="cfgSubtitle">
+    </div>
+    <h3>ชื่อหัวคอลัมน์</h3>
+    <div class="form" id="cfgLabels"></div>
+    <h3>ตัวเลือกใน dropdown (บรรทัดละ 1 รายการ)</h3>
+    <div class="form" id="cfgOptions"></div>
+  </div>
+  <div class="actions">
+    <button id="btnConfigCancel">ยกเลิก</button>
+    <button class="primary" id="btnConfigSave">บันทึก</button>
+  </div>
+</dialog>
+
+<!-- ═════════ เซิร์ฟเวอร์ ═════════ -->
+<dialog id="dlgServer">
+  <h2>ตั้งค่าเซิร์ฟเวอร์</h2>
+  <div class="form"><label for="srvUrl">Web App URL</label><input id="srvUrl" placeholder="https://script.google.com/macros/s/…/exec"></div>
+  <p class="note">ปกติใช้ค่าจาก docs/config.js ช่องนี้ใช้แทนเฉพาะเบราว์เซอร์เครื่องนี้</p>
+  <div class="actions">
+    <button class="left danger" id="btnSrvClear">ใช้ค่าจากไฟล์</button>
+    <button id="btnSrvSave" class="primary">บันทึก</button>
+  </div>
+</dialog>
+
+<script>
+const $ = s => document.querySelector(s);
+const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const FIELDS = ['group','id','studentId','name','status','career','practice','consult','occupation'];
+const OPTION_KEYS = ['status','career','practice','consult'];
+const PALETTE = ['green','blue','orange','purple','teal','magenta','yellow','red'];
+const FIXED_COLORS = { 'สม่ำเสมอ':'green','ครั้งคราว':'yellow','ยังไม่เคย':'gray','ทำงานด้านนี้':'teal','เคยอบรม':'blue','ไม่มี':'gray','พระภิกษุ':'orange','ฆราวาส':'gray' };
+const ICON_EYE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>';
+const ICON_EYE_OFF = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 19c-6.5 0-10-7-10-7a18.5 18.5 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c6.5 0 10 7 10 7a18.5 18.5 0 0 1-2.16 3.19"/><path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"/><line x1="2" y1="2" x2="22" y2="22"/></svg>';
+
+const serverUrl = () => localStorage.getItem('gas_url') || (window.APP_CONFIG && APP_CONFIG.GAS_URL) || '';
+const S = { token: sessionStorage.getItem('token') || '', user: null, perms: null, config: null, students: [], me: null, users: [], sort: null };
+
+/* ── เรียก Apps Script ── */
+async function call(action, params = {}) {
+  const url = serverUrl();
+  if (!url) { openServer(); throw new Error('ยังไม่ได้ตั้งค่า Web App URL'); }
+  const body = { ...params, action };
+  if (action !== 'public' && action !== 'login') body.token = S.token;
+  let res, d;
+  try {
+    res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(body) });
+  } catch (e) { throw new Error('เชื่อมต่อเซิร์ฟเวอร์ไม่ได้'); }
+  try { d = await res.json(); } catch (e) { throw new Error('เซิร์ฟเวอร์ตอบกลับไม่ถูกต้อง'); }
+  if (!d.ok) {
+    if (d.auth && action !== 'login') { endSession(); loadPublic(); openLogin(d.error); }
+    throw new Error(d.error || 'เกิดข้อผิดพลาด');
+  }
+  return d;
+}
+
+function setStatus(msg, bad = false) { const el = $('#status'); el.textContent = msg; el.className = bad ? 'bad' : ''; }
+const can = {
+  move: () => !!(S.perms && S.perms.move),
+  edit: k => !!(S.perms && S.perms.edit.includes(k)),
+  add: () => !!(S.perms && S.perms.add),
+  del: () => !!(S.perms && S.perms.del),
+  admin: () => !!(S.perms && S.perms.admin),
+};
+const staff = () => !!(S.user && S.user.role !== 'student');
+const colorOf = (k, v) => {
+  if (!v) return 'gray';
+  if (k === 'group') { const i = S.config.groups.indexOf(v); return i < 0 ? 'gray' : PALETTE[i % PALETTE.length]; }
+  if (FIXED_COLORS[v]) return FIXED_COLORS[v];
+  const i = (S.config.options[k] || []).indexOf(v); return i < 0 ? 'gray' : PALETTE[i % PALETTE.length];
+};
+
+/* ── โหลดข้อมูล ── */
+async function loadPublic() {
+  const d = await call('public');
+  if (d.publicView === false) {
+    S.config = null; S.students = []; S.user = null; S.perms = null;
+    $('#appTitle').textContent = document.title = d.config.title;
+    $('#appSub').textContent = d.config.subtitle || '';
+    $('#thead').innerHTML = '';
+    $('#tbody').innerHTML = '<tr><td class="empty">กรุณาเข้าสู่ระบบเพื่อดูรายชื่อ</td></tr>';
+    openLogin();
+    return;
+  }
+  applyData(d);
+}
+
+function applyData(d, rerender = true) {
+  S.user = d.user; S.perms = d.perms; S.config = d.config; S.students = d.students; S.me = d.me;
+  if (d.users) S.users = d.users;
+  if (rerender) renderAll();
+}
+
+function endSession() { S.token = ''; sessionStorage.removeItem('token'); S.user = null; S.me = null; }
+
+/* ── วาดหน้า ── */
+function renderAll() {
+  const c = S.config, L = c.labels;
+  document.title = c.title;
+  $('#appTitle').textContent = c.title;
+  $('#appSub').textContent = c.subtitle || '';
+
+  const logged = !!S.user;
+  $('#whoBox').hidden = !logged; $('#btnLogout').hidden = !logged; $('#btnOpenLogin').hidden = logged;
+  if (logged) {
+    $('#roleBadge').textContent = S.user.roleName;
+    $('#roleBadge').className = 'badge ' + S.user.role;
+    $('#whoName').textContent = S.user.name + (S.user.code ? ` (${S.user.code})` : '');
+  }
+  $('#btnAdd').hidden = !can.add();
+  $('#btnGroups').hidden = $('#btnUsers').hidden = $('#btnConfig').hidden = !can.admin();
+
+  const isStudent = !!(S.user && S.user.role === 'student');
+  $('#filterGroup').hidden = isStudent;
+  if (isStudent && S.me) {
+    $('#banner').hidden = false;
+    $('#banner').innerHTML = `คุณอยู่ <b>${esc(S.me.group)}</b> · สมาชิก ${S.students.length} คน · แถวที่ไฮไลต์คือข้อมูลของคุณ` +
+      (S.me.studentId ? '' : ` <span style="color:var(--muted)">(ตอนนี้เข้าด้วย${esc(L.id)} — เมื่อได้${esc(L.studentId)}แล้วให้ใช้รหัสนั้นแทน)</span>`);
+  } else $('#banner').hidden = true;
+
+  $('#search').placeholder = `ค้นหา${L.name} ${L.id} หรืออาชีพ…`;
+  const curG = $('#filterGroup').value, curC = $('#filterCareer').value;
+  $('#filterGroup').innerHTML = `<option value="">ทุก${esc(L.group)} (${S.students.length})</option>` +
+    c.groups.map(g => `<option value="${esc(g)}">${esc(g)} (${S.students.filter(s => s.group === g).length})</option>`).join('');
+  $('#filterGroup').value = c.groups.includes(curG) ? curG : '';
+  $('#filterCareer').innerHTML = `<option value="">ทุก${esc(L.career)}</option>` + c.options.career.map(v => `<option>${esc(v)}</option>`).join('');
+  $('#filterCareer').value = c.options.career.includes(curC) ? curC : '';
+
+  renderTable();
+}
+
+const visibleFields = () => FIELDS.filter(k => k !== 'studentId' || staff());
+
+function sortedRows() {
+  const c = S.config;
+  const rows = S.students.slice();
+  const gi = s => { const i = c.groups.indexOf(s.group); return i < 0 ? 999 : i; };
+  if (S.sort) {
+    const { key, dir } = S.sort;
+    rows.sort((a, b) => (key === 'group' ? gi(a) - gi(b) : String(a[key] || '').localeCompare(String(b[key] || ''), 'th')) * dir);
+  } else {
+    rows.sort((a, b) => gi(a) - gi(b) || ((a.status === 'พระภิกษุ') ? 0 : 1) - ((b.status === 'พระภิกษุ') ? 0 : 1) || String(a.id).localeCompare(String(b.id)));
+  }
+  return rows;
+}
+
+const optionList = k => k === 'group' ? S.config.groups : S.config.options[k];
+
+function fieldInput(k, value, attrs = '') {
+  const v = value ?? '';
+  if (k === 'group' || OPTION_KEYS.includes(k)) {
+    const list = optionList(k).slice();
+    if (v && !list.includes(v)) list.unshift(v);
+    return `<select name="${k}" ${attrs}>${k === 'group' ? '' : '<option value=""></option>'}${list.map(o =>
+      `<option ${o === v ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select>`;
+  }
+  const extra = k === 'studentId' ? 'inputmode="numeric" maxlength="10" placeholder="69xxxxxxxx"' : '';
+  return `<input name="${k}" value="${esc(v)}" ${extra} ${attrs}>`;
+}
+
+const cellEditable = k => k === 'group' ? (can.move() || can.edit('group')) : can.edit(k);
+
+function renderTable() {
+  const L = S.config.labels;
+  const fields = visibleFields();
+  const arrow = k => S.sort && S.sort.key === k ? `<span class="arrow">${S.sort.dir > 0 ? '▲' : '▼'}</span>` : '';
+  $('#thead').innerHTML = `<tr><th class="rn">#</th>${fields.map(k => `<th data-sort="${k}">${esc(L[k])}${arrow(k)}</th>`).join('')}${can.del() ? '<th></th>' : ''}</tr>`;
+  const rows = sortedRows();
+  if (!rows.length) { $('#tbody').innerHTML = `<tr><td class="empty" colspan="${fields.length + 2}">ยังไม่มีรายชื่อ</td></tr>`; updateCount(); return; }
+  $('#tbody').innerHTML = rows.map((s, i) => {
+    const isMe = S.me && s.id === S.me.id;
+    return `<tr data-id="${esc(s.id)}" class="${isMe ? 'me' : ''}" data-group="${esc(s.group)}" data-career="${esc(s.career)}"
+        data-search="${esc([s.id, staff() ? s.studentId : '', s.name, s.occupation, s.career, s.group].join(' ').toLowerCase())}">
+      <td class="rn">${i + 1}</td>
+      ${fields.map(k => {
+        const cls = k === 'name' ? 'name' : k === 'occupation' ? 'occ' : (k === 'id' || k === 'studentId') ? 'nw' : '';
+        if (cellEditable(k)) return `<td class="${cls}">${fieldInput(k, s[k], `data-cell="${k}"`)}</td>`;
+        if (k === 'group' || OPTION_KEYS.includes(k))
+          return `<td>${s[k] ? `<span class="pill" style="background:var(--c-${colorOf(k, s[k])})">${esc(s[k])}</span>` : ''}</td>`;
+        return `<td class="${cls}">${esc(s[k] || '')}${isMe && k === 'name' ? ' (คุณ)' : ''}</td>`;
+      }).join('')}
+      ${can.del() ? `<td><button class="icon danger" data-del title="ลบ">🗑</button></td>` : ''}
+    </tr>`;
+  }).join('');
+  applyFilter();
+}
+
+function applyFilter() {
+  const q = $('#search').value.trim().toLowerCase();
+  const g = $('#filterGroup').hidden ? '' : $('#filterGroup').value;
+  const c = $('#filterCareer').value;
+  $$('#tbody tr[data-id]').forEach(tr => tr.classList.toggle('hide',
+    !!((q && !tr.dataset.search.includes(q)) || (g && tr.dataset.group !== g) || (c && tr.dataset.career !== c))));
+  updateCount();
+}
+function updateCount() {
+  const shown = $$('#tbody tr[data-id]:not(.hide)').length;
+  $('#count').textContent = shown === S.students.length ? `${S.students.length} คน` : `แสดง ${shown} จาก ${S.students.length} คน`;
+}
+
+/* ── แก้ไขในตาราง ── */
+async function saveCell(td, id, key, value) {
+  td.classList.remove('saved'); td.classList.add('saving');
+  setStatus('กำลังบันทึก…');
+  try {
+    const d = key === 'group' && !can.edit('group')
+      ? await call('move', { id, group: value })
+      : await call('update', { id, data: { [key]: value } });
+    applyData(d, false); // ไม่วาดใหม่ เพื่อไม่ให้เสียตำแหน่งที่กำลังพิมพ์
+    const tr = td.closest('tr');
+    if (key === 'id') tr.dataset.id = value;
+    if (key === 'group') tr.dataset.group = value;
+    if (key === 'career') tr.dataset.career = value;
+    td.classList.remove('saving'); td.classList.add('saved');
+    setTimeout(() => td.classList.remove('saved'), 1200);
+    setStatus('บันทึกแล้ว ' + new Date().toLocaleTimeString('th-TH'));
+  } catch (e) {
+    const s = S.students.find(x => x.id === id);
+    const el = td.querySelector('[data-cell]'); if (el) el.value = s ? (s[key] || '') : '';
+    td.classList.remove('saving');
+    setStatus(e.message, true);
+  }
+}
+
+$('#tbody').addEventListener('change', e => {
+  const el = e.target.closest('[data-cell]'); if (!el) return;
+  const v = el.value.trim();
+  if (el.dataset.cell === 'studentId' && v && !/^\d{10}$/.test(v)) { setStatus('รหัสนิสิตต้องเป็นตัวเลข 10 หลัก', true); el.focus(); return; }
+  saveCell(el.closest('td'), el.closest('tr').dataset.id, el.dataset.cell, v);
+});
+$('#tbody').addEventListener('click', async e => {
+  if (!e.target.closest('[data-del]')) return;
+  const id = e.target.closest('tr').dataset.id;
+  const s = S.students.find(x => x.id === id);
+  if (!confirm(`ลบ ${s.name} (${s.id}) ออกจากระบบ?\nย้อนกลับไม่ได้ (ยกเว้นกู้จากแท็บสำรองใน Sheet)`)) return;
+  try { applyData(await call('delete', { id })); setStatus(`ลบ ${s.name} แล้ว`); } catch (err) { alert(err.message); }
+});
+$('#thead').addEventListener('click', e => {
+  const th = e.target.closest('[data-sort]'); if (!th) return;
+  const key = th.dataset.sort;
+  S.sort = !S.sort || S.sort.key !== key ? { key, dir: 1 } : S.sort.dir > 0 ? { key, dir: -1 } : null;
+  renderTable();
+});
+
+/* ── เข้าสู่ระบบ ── */
+function setEye(show) {
+  $('#code').type = show ? 'text' : 'password';
+  $('#eye').innerHTML = show ? ICON_EYE_OFF : ICON_EYE;
+  $('#eye').title = show ? 'ซ่อนรหัส' : 'แสดงรหัส';
+  $('#eye').setAttribute('aria-label', $('#eye').title);
+}
+$('#eye').onclick = () => { setEye($('#code').type === 'password'); $('#code').focus(); };
+function openLogin(msg = '') {
+  $$('dialog[open]').forEach(d => d.close());
+  $('#loginErr').textContent = msg; $('#code').value = ''; setEye(false);
+  $('#dlgLogin').showModal(); $('#code').focus();
+}
+$('#btnOpenLogin').onclick = () => openLogin();
+$('#btnLoginCancel').onclick = () => $('#dlgLogin').close();
+$('#loginForm').onsubmit = async e => {
+  e.preventDefault();
+  const code = $('#code').value.trim();
+  if (!code) { $('#loginErr').textContent = 'กรุณาใส่รหัส'; return; }
+  $('#btnLogin').disabled = true; $('#loginErr').textContent = '';
+  try {
+    const d = await call('login', { code });
+    S.token = d.token; sessionStorage.setItem('token', d.token);
+    S.sort = null;
+    applyData(d);
+    $('#dlgLogin').close();
+    setStatus('เข้าสู่ระบบแล้ว');
+  } catch (err) { $('#loginErr').textContent = err.message; }
+  finally { $('#btnLogin').disabled = false; }
+};
+$('#btnLogout').onclick = async () => {
+  try { await call('logout'); } catch (e) {}
+  endSession(); S.sort = null; setStatus('ออกจากระบบแล้ว');
+  try { await loadPublic(); } catch (e) { setStatus(e.message, true); }
+};
+
+/* ── เพิ่มนักศึกษา ── */
+$('#btnAdd').onclick = () => {
+  const L = S.config.labels;
+  $('#addForm').innerHTML = FIELDS.map(k => `<label>${esc(L[k])}</label>${fieldInput(k, k === 'group' ? S.config.groups[0] : '',
+    (k === 'id' || k === 'name' || k === 'group') ? 'required' : '')}`).join('');
+  $('#dlgAdd').showModal();
+};
+$('#btnAddCancel').onclick = () => $('#dlgAdd').close();
+$('#btnAddSave').onclick = async () => {
+  const f = $('#addForm');
+  if (!f.reportValidity()) return;
+  const data = Object.fromEntries(new FormData(f).entries());
+  if (data.studentId && !/^\d{10}$/.test(data.studentId)) return alert('รหัสนิสิตต้องเป็นตัวเลข 10 หลัก');
+  $('#btnAddSave').disabled = true;
+  try { applyData(await call('add', { data })); $('#dlgAdd').close(); setStatus(`เพิ่ม ${data.name} แล้ว`); }
+  catch (e) { alert(e.message); }
+  finally { $('#btnAddSave').disabled = false; }
+};
+
+/* ── จัดการกลุ่ม ── */
+function renderGroups() {
+  const g = S.config.groups;
+  $('#groupsBody').innerHTML = g.map((name, i) => `<tr data-g="${esc(name)}">
+    <td><span class="pill" style="background:var(--c-${PALETTE[i % PALETTE.length]})">${esc(name)}</span></td>
+    <td>${S.students.filter(s => s.group === name).length} คน</td>
+    <td style="white-space:nowrap;text-align:right">
+      <button class="icon" data-ga="left" ${i === 0 ? 'disabled' : ''} title="เลื่อนขึ้น">▲</button>
+      <button class="icon" data-ga="right" ${i === g.length - 1 ? 'disabled' : ''} title="เลื่อนลง">▼</button>
+      <button class="icon" data-ga="rename" title="เปลี่ยนชื่อ">✏️</button>
+      <button class="icon danger" data-ga="delete" title="ลบ">🗑</button>
+    </td></tr>`).join('');
+}
+$('#btnGroups').onclick = () => { renderGroups(); $('#dlgGroups').showModal(); };
+$('#btnGroupsClose').onclick = () => $('#dlgGroups').close();
+$('#groupsBody').addEventListener('click', async e => {
+  const b = e.target.closest('[data-ga]'); if (!b) return;
+  const name = b.closest('tr').dataset.g, act = b.dataset.ga;
+  try {
+    if (act === 'rename') {
+      const to = prompt('ชื่อใหม่ของ "' + name + '"', name);
+      if (!to || to.trim() === name) return;
+      applyData(await call('renameGroup', { from: name, to: to.trim() }));
+    } else if (act === 'delete') {
+      if (!confirm('ลบ "' + name + '"?')) return;
+      applyData(await call('deleteGroup', { name }));
+    } else applyData(await call('moveGroup', { name, direction: act }));
+    renderGroups();
+  } catch (err) { alert(err.message); }
+});
+$('#btnGroupAdd').onclick = async () => {
+  const name = prompt('ชื่อกลุ่มใหม่', 'กลุ่ม ' + (S.config.groups.length + 1));
+  if (!name || !name.trim()) return;
+  try { applyData(await call('addGroup', { name: name.trim() })); renderGroups(); } catch (e) { alert(e.message); }
+};
+
+/* ── อาจารย์ / TA ── */
+const roleOf = c => /^\d{4}$/.test(c) ? 'อาจารย์ผู้สอน' : /^TA\d{4}$/i.test(c) ? 'TA ผู้ช่วย' : (c ? '⚠️ รูปแบบไม่ถูกต้อง' : '');
+const userRow = (u = {}) => `<tr><td><input data-u="code" value="${esc(u.code)}" placeholder="6901 / TA6901" maxlength="6"></td>
+  <td><input data-u="name" value="${esc(u.name)}"></td><td><input data-u="note" value="${esc(u.note)}"></td>
+  <td class="role" style="font-size:13px;color:var(--muted);white-space:nowrap">${esc(roleOf(u.code || ''))}</td>
+  <td><button class="icon danger" data-urm title="ลบแถว">🗑</button></td></tr>`;
+$('#btnUsers').onclick = () => { $('#usersBody').innerHTML = S.users.map(userRow).join(''); $('#dlgUsers').showModal(); };
+$('#btnUserAdd').onclick = () => { $('#usersBody').insertAdjacentHTML('beforeend', userRow()); $('#usersBody tr:last-child input').focus(); };
+$('#usersBody').addEventListener('click', e => { if (e.target.closest('[data-urm]')) e.target.closest('tr').remove(); });
+$('#usersBody').addEventListener('input', e => {
+  if (e.target.dataset.u !== 'code') return;
+  e.target.value = e.target.value.toUpperCase();
+  e.target.closest('tr').querySelector('.role').textContent = roleOf(e.target.value.trim());
+});
+$('#btnUsersCancel').onclick = () => $('#dlgUsers').close();
+$('#btnUsersSave').onclick = async () => {
+  const users = $$('#usersBody tr').map(tr => Object.fromEntries($$('input', tr).map(i => [i.dataset.u, i.value.trim()])));
+  $('#btnUsersSave').disabled = true;
+  try { applyData(await call('saveUsers', { users })); $('#dlgUsers').close(); setStatus('บันทึกรายชื่ออาจารย์/TA แล้ว'); }
+  catch (e) { alert(e.message); }
+  finally { $('#btnUsersSave').disabled = false; }
+};
+
+/* ── ตั้งค่าข้อความ ── */
+$('#btnConfig').onclick = () => {
+  const c = S.config;
+  $('#cfgTitle').value = c.title; $('#cfgSubtitle').value = c.subtitle;
+  $('#cfgLabels').innerHTML = Object.keys(c.labels).map(k => `<label>${esc(k)}</label><input data-label="${k}" value="${esc(c.labels[k])}">`).join('');
+  $('#cfgOptions').innerHTML = OPTION_KEYS.map(k => `<label>${esc(c.labels[k])}</label><textarea data-opt="${k}">${esc(c.options[k].join('\n'))}</textarea>`).join('');
+  $('#dlgConfig').showModal();
+};
+$('#btnConfigCancel').onclick = () => $('#dlgConfig').close();
+$('#btnConfigSave').onclick = async () => {
+  const config = {
+    title: $('#cfgTitle').value, subtitle: $('#cfgSubtitle').value,
+    labels: Object.fromEntries($$('[data-label]').map(i => [i.dataset.label, i.value])),
+    options: Object.fromEntries($$('[data-opt]').map(t => [t.dataset.opt, t.value.split('\n')])),
+  };
+  $('#btnConfigSave').disabled = true;
+  try { applyData(await call('saveConfig', { config })); $('#dlgConfig').close(); setStatus('บันทึกการตั้งค่าแล้ว'); }
+  catch (e) { alert(e.message); }
+  finally { $('#btnConfigSave').disabled = false; }
+};
+
+/* ── เซิร์ฟเวอร์ ── */
+function openServer() { $('#srvUrl').value = serverUrl(); $('#dlgServer').showModal(); }
+$('#lnkServer').onclick = openServer;
+$('#btnSrvSave').onclick = () => { const v = $('#srvUrl').value.trim(); v ? localStorage.setItem('gas_url', v) : localStorage.removeItem('gas_url'); $('#dlgServer').close(); refresh(); };
+$('#btnSrvClear').onclick = () => { localStorage.removeItem('gas_url'); $('#srvUrl').value = serverUrl(); };
+
+/* ── อื่น ๆ ── */
+$('#search').addEventListener('input', applyFilter);
+$('#filterGroup').addEventListener('change', applyFilter);
+$('#filterCareer').addEventListener('change', applyFilter);
+async function refresh() {
+  setStatus('กำลังโหลด…');
+  try {
+    if (S.token) applyData(await call('list')); else await loadPublic();
+    setStatus('อัปเดต ' + new Date().toLocaleTimeString('th-TH'));
+  } catch (e) { setStatus(e.message, true); }
+}
+$('#btnReload').onclick = refresh;
+
+setEye(false);
+refresh();
+</script>
+</body>
+</html>
