@@ -1,0 +1,41 @@
+# ตรวจว่า Apps Script Web App ยังทำงาน และสั่งสำรองแผ่นงานไว้ใน Google Sheet เอง
+# (ข้อมูลไม่ออกจาก Google — GitHub แค่ส่งคำสั่ง)
+# ต้องตั้ง Secrets: GAS_URL (ลงท้าย /exec) และ GAS_API_KEY
+name: Sheet health check & backup
+
+on:
+  schedule:
+    - cron: '0 17 * * *'   # ทุกวัน 00:00 น. เวลาไทย (17:00 UTC)
+  workflow_dispatch:
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping web app
+        env:
+          GAS_URL: ${{ secrets.GAS_URL }}
+        run: |
+          resp=$(curl -fsSL "$GAS_URL?action=ping")
+          echo "$resp"
+          echo "$resp" | jq -e '.ok == true' > /dev/null
+
+      - name: Check student count
+        env:
+          GAS_URL: ${{ secrets.GAS_URL }}
+          GAS_API_KEY: ${{ secrets.GAS_API_KEY }}
+        run: |
+          resp=$(curl -fsSL -G "$GAS_URL" --data-urlencode "action=summary" --data-urlencode "key=$GAS_API_KEY")
+          echo "$resp" | jq -e '.ok == true' > /dev/null || { echo "$resp" | jq -r '.error'; exit 1; }
+          echo "$resp" | jq -r '.summary[] | "\(.group): \(.total) คน"' | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Snapshot sheet
+        env:
+          GAS_URL: ${{ secrets.GAS_URL }}
+          GAS_API_KEY: ${{ secrets.GAS_API_KEY }}
+        run: |
+          body=$(jq -nc --arg key "$GAS_API_KEY" '{key:$key, action:"snapshot"}')
+          # ไม่ใส่ -X POST: Apps Script ตอบ 302 และต้องตามไปด้วย GET
+          resp=$(curl -fsSL -H 'Content-Type: text/plain' --data "$body" "$GAS_URL")
+          echo "$resp" | jq -e '.ok == true' > /dev/null || { echo "$resp" | jq -r '.error'; exit 1; }
+          echo "สำรองเป็นแท็บ: $(echo "$resp" | jq -r '.backup')" | tee -a "$GITHUB_STEP_SUMMARY"
