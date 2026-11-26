@@ -28,7 +28,18 @@ const LMS_COLL = {
   practiceByUser: { sheet: 'LMS บันทึกปฏิบัติธรรม', cols: ['daily30Rounds', 'daily30Minutes', 'classMinutes'], sheetEditable: [] },
   courseReflections: { sheet: 'LMS สะท้อนรายวิชา', cols: [], sheetEditable: [] },
   settings: { sheet: 'LMS ตั้งค่า', cols: [], sheetEditable: [] },
+  // งานสอนของอาจารย์
+  assignments: { sheet: 'LMS การบ้าน', cols: ['subject', 'title', 'dueDate', 'maxScore', 'createdBy'],
+    sheetEditable: ['title', 'dueDate', 'maxScore'] },
+  submissions: { sheet: 'LMS ส่งการบ้าน', cols: ['assignmentId', 'studentId', 'submittedAt', 'score', 'feedback', 'gradedBy'],
+    sheetEditable: ['score', 'feedback'] },
+  reviews: { sheet: 'LMS คะแนนอาจารย์', cols: ['studentId', 'subject', 'kind', 'score', 'maxScore', 'comment', 'by'],
+    sheetEditable: ['score', 'maxScore', 'comment'] },
 };
+
+/** บทบาทที่ให้คะแนน/สั่งการบ้าน และบทบาทที่เช็กชื่อนักศึกษาได้ (เพิ่ม 'ta' ได้ถ้าต้องการ) */
+const LMS_GRADER_ROLES = ['teacher', 'admin'];
+const LMS_ATTENDANCE_ROLES = ['teacher', 'admin'];
 
 const LMS_DEFAULT_COURSE_INFO = {
   name: 'ประกาศนียบัตรการปรึกษาเชิงจิตวิทยาแนววิปัสสนาภาวนา (ป.จว. รุ่น 1)',
@@ -219,11 +230,20 @@ function lmsData_(s) {
       attendance: isStaff ? att : filterKeys(att, k => k.indexOf(uid + '_') === 0),
       logs: lmsValues_(lmsRead_('logs').map).filter(l => isStaff || l.studentId === uid).sort((a, b) => logNum(b) - logNum(a)),
       selfAssessments: isStaff ? assess : filterKeys(assess, k => k === uid),
-      practiceByUser: isAdmin ? practice : filterKeys(practice, k => k === uid),
+      // บุคลากรเห็นบันทึกปฏิบัติธรรมของนักศึกษาทุกคน (เพื่อตรวจ) · นักศึกษาเห็นของตนเอง
+      practiceByUser: isStaff ? practice : filterKeys(practice, k => k === uid),
       courseReflections: isStaff ? refl : {},
+      assignments: lmsValues_(lmsRead_('assignments').map).sort((a, b) =>
+        String(a.subject || '').localeCompare(String(b.subject || '')) || String(a.dueDate || '').localeCompare(String(b.dueDate || ''))),
+      submissions: isStaff ? lmsRead_('submissions').map : filterKeys(lmsRead_('submissions').map, k => lmsSubStudent_(k) === uid),
+      reviews: isStaff ? lmsRead_('reviews').map : filterKeys(lmsRead_('reviews').map, k => k.indexOf(uid + '_') === 0),
     }
   };
 }
+
+/** key ของการส่งการบ้าน = "<assignmentId>_<studentId>" */
+function lmsSubStudent_(key) { const i = String(key).indexOf('_'); return i < 0 ? '' : String(key).slice(i + 1); }
+function lmsSubAssignment_(key) { const i = String(key).indexOf('_'); return i < 0 ? '' : String(key).slice(0, i); }
 
 function lmsSettings_() {
   const m = lmsRead_('settings').map;
@@ -289,10 +309,56 @@ function lmsSave_(s, changes) {
             return put('replays', key, merged);
           }
 
-          case 'attendance':
-            if (!isAdmin && key.indexOf(uid + '_') !== 0) return skip(clientColl, key);
-            if (isDel && !isAdmin) return skip(clientColl, key);
-            return put('attendance', key, val);
+          case 'attendance': {
+            if (isAdmin) return put('attendance', key, val);
+            if (isDel) return skip(clientColl, key);
+            if (key.indexOf(uid + '_') === 0) {
+              // บันทึกของตนเอง — คงผลที่อาจารย์บันทึกไว้
+              const old = cur('attendance')[key] || {};
+              const mine = Object.assign({}, val);
+              ['teacherStatus', 'teacherNote', 'markedBy', 'markedAt'].forEach(f => { if (old[f] !== undefined) mine[f] = old[f]; else delete mine[f]; });
+              return put('attendance', key, mine);
+            }
+            if (LMS_ATTENDANCE_ROLES.indexOf(s.role) >= 0) {
+              // อาจารย์เช็กชื่อนักศึกษา: แก้ได้เฉพาะสถานะที่อาจารย์บันทึก
+              const old = cur('attendance')[key] || {};
+              return put('attendance', key, Object.assign({}, old, {
+                teacherStatus: String(val.teacherStatus || ''), teacherNote: String(val.teacherNote || ''),
+                markedBy: s.displayName, markedAt: new Date().toISOString() }));
+            }
+            return skip(clientColl, key);
+          }
+
+          case 'assignments': {
+            if (LMS_GRADER_ROLES.indexOf(s.role) < 0) return skip(clientColl, key);
+            if (isDel) return put('assignments', key, null);
+            const old = cur('assignments')[key] || {};
+            return put('assignments', key, Object.assign({}, val, { id: key, createdBy: old.createdBy || s.displayName,
+              maxScore: String(Number(val.maxScore) || 0) }));
+          }
+
+          case 'submissions': {
+            const old = cur('submissions')[key];
+            const sid = lmsSubStudent_(key), aid = lmsSubAssignment_(key);
+            if (s.role === 'student') {
+              if (sid !== uid || isDel) return skip(clientColl, key);
+              if (!cur('assignments')[aid]) return skip(clientColl, key, 'ไม่มีการบ้านนี้');
+              const keep = old ? { score: old.score, feedback: old.feedback, gradedBy: old.gradedBy, gradedAt: old.gradedAt } : {};
+              return put('submissions', key, Object.assign({ assignmentId: aid, studentId: uid }, {
+                text: String(val.text || ''), link: String(val.link || ''), submittedAt: new Date().toISOString() }, keep));
+            }
+            if (LMS_GRADER_ROLES.indexOf(s.role) < 0) return skip(clientColl, key);
+            if (isDel) return isAdmin ? put('submissions', key, null) : skip(clientColl, key);
+            return put('submissions', key, Object.assign({ assignmentId: aid, studentId: sid }, old || {}, {
+              score: val.score === '' || val.score == null ? '' : String(Number(val.score) || 0),
+              feedback: String(val.feedback || ''), gradedBy: s.displayName, gradedAt: new Date().toISOString() }));
+          }
+
+          case 'reviews': {
+            if (LMS_GRADER_ROLES.indexOf(s.role) < 0) return skip(clientColl, key);
+            if (isDel) return put('reviews', key, null);
+            return put('reviews', key, Object.assign({}, val, { by: s.displayName, at: new Date().toISOString() }));
+          }
 
           case 'practiceByUser':
             if (!isAdmin && key !== uid) return skip(clientColl, key);
@@ -315,10 +381,17 @@ function lmsSave_(s, changes) {
               if (old && old.studentId !== uid) return skip(clientColl, key);
               const me = cur('students')[uid] || {};
               return put('logs', key, Object.assign({}, val, { id: key, studentId: uid, studentCode: me.code || val.studentCode, studentName: me.name || val.studentName,
-                instructorFeedback: old ? (old.instructorFeedback || '') : '' }));
+                instructorFeedback: old ? (old.instructorFeedback || '') : '',
+                subject: old ? old.subject : undefined, score: old ? old.score : undefined, maxScore: old ? old.maxScore : undefined,
+                reviewedBy: old ? old.reviewedBy : undefined, reviewedAt: old ? old.reviewedAt : undefined }));
             }
             if (!old) return put('logs', key, Object.assign({}, val, { id: key, instructorFeedback: s.role === 'teacher' ? (val.instructorFeedback || '') : '' }));
-            if (s.role === 'teacher') return put('logs', key, Object.assign({}, old, { instructorFeedback: String(val.instructorFeedback || '') }));
+            if (LMS_GRADER_ROLES.indexOf(s.role) >= 0) return put('logs', key, Object.assign({}, old, {
+              instructorFeedback: String(val.instructorFeedback || ''), subject: String(val.subject || old.subject || ''),
+              score: val.score === undefined ? (old.score === undefined ? '' : old.score)
+                : (val.score === '' || val.score === null ? '' : String(Number(val.score) || 0)),
+              maxScore: String(Number(val.maxScore) || Number(old.maxScore) || 10),
+              reviewedBy: s.displayName, reviewedAt: new Date().toISOString() }));
             return skip(clientColl, key);
           }
 
@@ -357,9 +430,9 @@ function lmsClear_(s, adminPassword, fullReset) {
   const acc = lmsRead_('staff').map[s.userId];
   if (!acc || String(acc.password) !== String(adminPassword || '')) throw new Error('รหัสผ่านผู้ดูแลระบบ (Admin) ไม่ถูกต้อง');
   snapshotLms_();
-  ['attendance', 'logs', 'selfAssessments', 'practiceByUser', 'courseReflections'].forEach(lmsClearSheet_);
+  ['attendance', 'logs', 'selfAssessments', 'practiceByUser', 'courseReflections', 'submissions', 'reviews'].forEach(lmsClearSheet_);
   if (fullReset) {
-    ['students', 'sessions', 'replays', 'settings'].forEach(lmsClearSheet_);
+    ['students', 'sessions', 'replays', 'settings', 'assignments'].forEach(lmsClearSheet_);
     lmsWriteMany_('settings', { courseInfo: LMS_DEFAULT_COURSE_INFO, postAssessmentLocked: { value: true } }, s.username);
     lmsSeedStudents_(s.username);
     lmsSeedSessions_(s.username);
@@ -372,7 +445,7 @@ function lmsClear_(s, adminPassword, fullReset) {
 function snapshotLms_() {
   const ss = ss_();
   const stamp = Utilities.formatDate(new Date(), 'Asia/Bangkok', 'yyyy-MM-dd HHmm');
-  ['attendance', 'logs', 'selfAssessments', 'practiceByUser', 'students'].forEach(name => {
+  ['attendance', 'logs', 'selfAssessments', 'practiceByUser', 'students', 'assignments', 'submissions', 'reviews'].forEach(name => {
     const sh = ss.getSheetByName(LMS_COLL[name].sheet);
     if (sh && sh.getLastRow() > 1) sh.copyTo(ss).setName(('สำรอง LMS ' + stamp + ' ' + name).slice(0, 99)).hideSheet();
   });
@@ -415,7 +488,7 @@ function lmsRead_(name) {
       const cell = r[1 + def.cols.indexOf(c)];
       if (cell !== '' && cell != null) obj[c] = String(cell);
     });
-    if (name !== 'attendance' && name !== 'selfAssessments' && name !== 'practiceByUser' && name !== 'courseReflections' && name !== 'settings' && !obj.id) obj.id = key;
+    if (['attendance', 'selfAssessments', 'practiceByUser', 'courseReflections', 'settings', 'submissions', 'reviews'].indexOf(name) < 0 && !obj.id) obj.id = key;
     map[key] = obj;
     rows[key] = i + 2;
   });
