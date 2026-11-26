@@ -1,3 +1,4 @@
 apps-script/Seed.gs
 .DS_Store
 .claude/
+apps-script/LmsSeed.gs
