@@ -2,7 +2,8 @@
  * ระบบแบ่งกลุ่มนักศึกษา ป.จว. รุ่นที่ 1 — Google Apps Script backend (มีระบบเข้าสู่ระบบตามบทบาท)
  *
  * บทบาทและรหัสเข้าใช้งาน:
- *   นิสิต          รหัสนิสิต 10 หลัก (เช่น 69xxxxxxxx) — ต้องตรงกับคอลัมน์ "รหัสนิสิต" ในแผ่นงานรายชื่อ
+ *   นิสิต          ช่วงแรก: เลขที่เดิม (เช่น 01-043)
+ *                  เมื่อผู้ดูแลกรอก "รหัสนิสิต" 10 หลักแล้ว: ใช้รหัสนิสิต (เช่น 69xxxxxxxx) และเลขที่เดิมจะใช้ไม่ได้อีก
  *   อาจารย์ผู้สอน  ตัวเลข 4 หลัก (เช่น 6901)          — ต้องอยู่ในแผ่นงาน "ผู้ใช้ (อาจารย์-TA)"
  *   TA ผู้ช่วย      TA + ตัวเลข 4 หลัก (เช่น TA6901)  — ต้องอยู่ในแผ่นงาน "ผู้ใช้ (อาจารย์-TA)"
  *   ผู้ดูแลระบบ    รหัสผ่านผู้ดูแล (ตั้งครั้งแรกจาก INITIAL_ADMIN_PASSWORD ใน Seed.gs)
@@ -20,6 +21,10 @@ const LOG_NAME = 'บันทึกการแก้ไข';
 const BACKUP_PREFIX = 'สำรอง ';
 const KEEP_BACKUPS = 14;
 const SESSION_SECONDS = 6 * 60 * 60; // อยู่ในระบบได้ 6 ชั่วโมง (สูงสุดที่ CacheService รองรับ)
+/** true = เปิดเว็บแล้วเห็นตารางรายชื่อได้เลยโดยไม่ต้องเข้าสู่ระบบ (ไม่แสดงรหัสนิสิต) */
+const PUBLIC_VIEW = true;
+/** คอลัมน์ที่แสดงต่อสาธารณะ / ให้นิสิตเห็น (ไม่รวมรหัสนิสิต เพราะใช้เป็นรหัสเข้าระบบ) */
+const PUBLIC_KEYS = ['group', 'id', 'name', 'status', 'career', 'practice', 'consult', 'occupation'];
 
 const KEYS = ['group', 'id', 'studentId', 'name', 'status', 'career',
   'practice', 'consult', 'occupation', 'updatedAt'];
@@ -166,6 +171,10 @@ function doPost(e) {
   }
   try {
     if (body.action === 'login') return json_(login_(body.code));
+    if (body.action === 'public') {
+      if (!PUBLIC_VIEW) return json_({ ok: true, publicView: false, config: { title: getConfig_().title, subtitle: getConfig_().subtitle } });
+      return json_(publicData_());
+    }
 
     if (body.key) { // สำหรับ GitHub Actions
       checkKey_(body.key);
@@ -253,6 +262,11 @@ function login_(rawCode) {
   } else if (/^\d{10}$/.test(code)) {
     const s = readAll_().find(x => x.studentId === code);
     if (s) user = { role: 'student', code: code, name: s.name };
+  } else if (/^\d{2}-\d{3}$/.test(code)) {
+    // เลขที่เดิม: ใช้ได้เฉพาะคนที่ยังไม่มีรหัสนิสิต 10 หลัก
+    const s = readAll_().find(x => x.id === code);
+    if (s && !s.studentId) user = { role: 'student', code: code, name: s.name };
+    else if (s) throw new Error('คุณมีรหัสนิสิต 10 หลักแล้ว กรุณาใช้รหัสนิสิตเข้าสู่ระบบ');
   } else if (/^\d{4}$/.test(code) || /^TA\d{4}$/i.test(code)) {
     const u = users_().find(x => x.code === code.toUpperCase());
     if (u) user = { role: u.role, code: u.code, name: u.name };
@@ -263,6 +277,7 @@ function login_(rawCode) {
     cache.put('fail:all', String(Number(cache.get('fail:all') || 0) + 1), 600);
     let hint = 'รหัสไม่ถูกต้อง';
     if (/^\d{10}$/.test(code)) hint = 'ไม่พบรหัสนิสิตนี้ในระบบ';
+    else if (/^\d{2}-\d{3}$/.test(code)) hint = 'ไม่พบเลขที่นี้ในระบบ';
     else if (/^\d{4}$/.test(code)) hint = 'ไม่พบรหัสอาจารย์นี้ในระบบ';
     else if (/^TA\d{4}$/i.test(code)) hint = 'ไม่พบรหัส TA นี้ในระบบ';
     throw new Error(hint);
@@ -284,8 +299,9 @@ function auth_(token) {
   const user = JSON.parse(raw);
   // ตรวจทุกครั้งว่ายังมีสิทธิ์อยู่ (เผื่อถูกลบหรือเปลี่ยนรหัส)
   if (user.role === 'student') {
-    const me = readAll_().find(s => s.studentId === user.code);
-    if (!me) throw fail('ไม่พบรหัสนิสิตของคุณในระบบแล้ว');
+    const byId = /^\d{2}-\d{3}$/.test(user.code);
+    const me = readAll_().find(s => byId ? (s.id === user.code && !s.studentId) : s.studentId === user.code);
+    if (!me) throw fail(byId ? 'กรุณาเข้าสู่ระบบใหม่ด้วยรหัสนิสิต 10 หลัก' : 'ไม่พบรหัสนิสิตของคุณในระบบแล้ว');
     user.me = me;
     user.name = me.name;
   } else if (user.role === 'teacher' || user.role === 'ta') {
@@ -303,8 +319,7 @@ function bootstrap_(user) {
   let me = null;
   if (!p.viewAll) {
     me = user.me;
-    students = students.filter(s => s.group === me.group)
-      .map(s => ({ group: s.group, id: s.id, name: s.name, status: s.status, career: s.career }));
+    students = students.filter(s => s.group === me.group).map(publicRow_);
   }
   return {
     ok: true,
@@ -314,6 +329,25 @@ function bootstrap_(user) {
     students: students,
     me: me,
     users: p.admin ? users_() : undefined,
+  };
+}
+
+function publicRow_(s) {
+  const o = {};
+  PUBLIC_KEYS.forEach(k => o[k] = s[k]);
+  return o;
+}
+
+/** ข้อมูลสำหรับคนที่ยังไม่เข้าสู่ระบบ: ดูตารางได้ แก้ไม่ได้ ไม่มีรหัสนิสิต */
+function publicData_() {
+  return {
+    ok: true,
+    publicView: true,
+    user: null,
+    perms: { viewAll: true, move: false, edit: [], add: false, del: false, admin: false },
+    config: getConfig_(),
+    students: readAll_().map(publicRow_),
+    me: null,
   };
 }
 
