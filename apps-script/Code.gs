@@ -132,6 +132,9 @@ function setup() {
   if (!props.getProperty('API_KEY')) props.setProperty('API_KEY', Utilities.getUuid().replace(/-/g, ''));
   Logger.log('ติดตั้งเสร็จแล้ว');
   Logger.log('API_KEY (สำหรับ GitHub Secrets ชื่อ GAS_API_KEY) = ' + props.getProperty('API_KEY'));
+
+  // ระบบ LMS (ไฟล์ Lms.gs + LmsSeed.gs)
+  if (typeof lmsSetup_ === 'function') lmsSetup_();
 }
 
 /** เปลี่ยนรหัสผ่านผู้ดูแล: แก้ค่าในบรรทัดล่างแล้ว Run (แล้วลบค่าออกจากโค้ด) */
@@ -170,6 +173,9 @@ function doPost(e) {
     return json_({ ok: false, error: 'รูปแบบคำขอไม่ถูกต้อง' });
   }
   try {
+    // ระบบ LMS (หน้าเว็บหลัก) — ดู Lms.gs
+    if (/^lms/.test(String(body.action || ''))) return json_(lmsHandle_(body));
+
     if (body.action === 'login') return json_(login_(body.code));
     if (body.action === 'public') {
       if (!PUBLIC_VIEW) return json_({ ok: true, publicView: false, config: { title: getConfig_().title, subtitle: getConfig_().subtitle } });
