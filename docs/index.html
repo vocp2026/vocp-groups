@@ -234,6 +234,9 @@
                 logs: [],
                 courseReflections: {},
                 selfAssessments: {},
+                assignments: [],
+                submissions: {},
+                reviews: {},
                 replays: []
             };
         }
@@ -416,8 +419,8 @@
             return d;
         }
 
-        const SYNC_ARRAYS = ['students', 'teacherAccounts', 'taAccounts', 'sessions', 'replays', 'logs'];
-        const SYNC_OBJECTS = ['attendance', 'selfAssessments', 'practiceByUser', 'courseReflections'];
+        const SYNC_ARRAYS = ['students', 'teacherAccounts', 'taAccounts', 'sessions', 'replays', 'logs', 'assignments'];
+        const SYNC_OBJECTS = ['attendance', 'selfAssessments', 'practiceByUser', 'courseReflections', 'submissions', 'reviews'];
 
         function syncCollections(data) {
             const out = {};
@@ -2005,6 +2008,591 @@
             `;
         }
 
+        // =========================================================================
+        // 10. งานสอนของอาจารย์ (เช็กชื่อ การบ้าน ตรวจบันทึก ให้คะแนน) และการบ้านของนักศึกษา
+        // =========================================================================
+        const SUBJECTS = [
+            { code: 'จว 001', name: 'จิตวิทยาในพระไตรปิฎก' },
+            { code: 'จว 002', name: 'การพัฒนาจิตวิทยาสู่วิปัสสนาภาวนา' },
+            { code: 'จว 003', name: 'แนวคิดและทฤษฎีพุทธจิตวิทยาและจิตวิทยาการให้การปรึกษา' },
+            { code: 'จว 004', name: 'ทักษะและกระบวนการให้การปรึกษาเชิงจิตวิทยาแนววิปัสสนาภาวนา' }
+        ];
+        const ATT_STATUSES = [
+            { v: 'มา', on: 'bg-emerald-600 text-white border-emerald-700', off: 'bg-emerald-50 text-emerald-900 border-emerald-200 hover:bg-emerald-100' },
+            { v: 'สาย', on: 'bg-amber-500 text-white border-amber-600', off: 'bg-amber-50 text-amber-900 border-amber-200 hover:bg-amber-100' },
+            { v: 'ลา', on: 'bg-sky-600 text-white border-sky-700', off: 'bg-sky-50 text-sky-900 border-sky-200 hover:bg-sky-100' },
+            { v: 'ขาด', on: 'bg-red-600 text-white border-red-700', off: 'bg-red-50 text-red-900 border-red-200 hover:bg-red-100' }
+        ];
+        let teachSubTab = 'attendance';
+        let teachSessionId = '';
+        let teachSubject = 'จว 001';
+        let teachAssignmentId = '';
+        let teachStudentId = '';
+        let teachLogFilter = 'pending';
+        let teachLogStudent = '';
+
+        function canGrade() { return ['teacher', 'admin'].includes(currentSession?.role); }
+        function subjectOfSession(ses) {
+            const t = toArabicDigits(ses?.title || '');
+            const s = SUBJECTS.find(x => t.includes(x.code));
+            return s ? s.code : '';
+        }
+        function subjectName(code) { return (SUBJECTS.find(s => s.code === code) || {}).name || code; }
+        function attRecord(sid, sesId) { return (appData.attendance || {})[`${sid}_${sesId}`] || {}; }
+        function isPresentRec(rec) {
+            if (rec.teacherStatus) return rec.teacherStatus === 'มา' || rec.teacherStatus === 'สาย';
+            return Boolean(rec.checkInTime);
+        }
+        function subKey(aid, sid) { return `${aid}_${sid}`; }
+        function reviewKey(sid, subj, kind) { return `${sid}_${subj}_${kind}`; }
+        function numVal(v) { const n = Number(v); return Number.isFinite(n) ? n : 0; }
+        function hasScore(v) { return v !== '' && v !== null && v !== undefined; }
+        function defaultTeachSession() {
+            const sessions = appData.sessions || [];
+            const today = getTodayISO();
+            const upcoming = sessions.filter(s => s.date <= today);
+            return (upcoming[upcoming.length - 1] || sessions[0] || {}).id || '';
+        }
+
+        function subjectSummary(sid, subj) {
+            const sessions = (appData.sessions || []).filter(s => subjectOfSession(s) === subj);
+            const present = sessions.filter(s => isPresentRec(attRecord(sid, s.id))).length;
+            const asg = (appData.assignments || []).filter(a => a.subject === subj);
+            let hwScore = 0, hwMax = 0, hwSubmitted = 0;
+            asg.forEach(a => {
+                hwMax += numVal(a.maxScore);
+                const sub = (appData.submissions || {})[subKey(a.id, sid)];
+                if (sub && (sub.text || sub.link)) hwSubmitted++;
+                if (sub && hasScore(sub.score)) hwScore += numVal(sub.score);
+            });
+            const practice = (appData.reviews || {})[reviewKey(sid, subj, 'practice')] || null;
+            const logs = (appData.logs || []).filter(l => l.studentId === sid && l.subject === subj && hasScore(l.score));
+            const cScore = logs.reduce((a, l) => a + numVal(l.score), 0);
+            const cMax = logs.reduce((a, l) => a + (numVal(l.maxScore) || 10), 0);
+            const pScore = practice && hasScore(practice.score) ? numVal(practice.score) : 0;
+            const pMax = practice ? (numVal(practice.maxScore) || 0) : 0;
+            return {
+                sessions: sessions.length, present, attPct: sessions.length ? Math.round(present * 100 / sessions.length) : 0,
+                asgCount: asg.length, hwSubmitted, hwScore, hwMax, practice, pScore, pMax, cScore, cMax, cCount: logs.length,
+                total: hwScore + pScore + cScore, totalMax: hwMax + pMax + cMax
+            };
+        }
+
+        // ---------- การทำงานของอาจารย์ ----------
+        window.teacherMarkAttendance = function(sid, sesId, status) {
+            if (!canGrade()) return;
+            const key = `${sid}_${sesId}`;
+            const rec = Object.assign({}, appData.attendance[key] || {});
+            rec.teacherStatus = rec.teacherStatus === status ? '' : status;
+            rec.markedBy = currentSession.displayName;
+            rec.markedAt = new Date().toISOString();
+            appData.attendance[key] = rec;
+            saveAppData(appData);
+            renderApp();
+        };
+
+        window.teacherMarkAllPresent = function(sesId) {
+            if (!canGrade()) return;
+            let n = 0;
+            (appData.students || []).forEach(st => {
+                const key = `${st.id}_${sesId}`;
+                const rec = Object.assign({}, appData.attendance[key] || {});
+                if (!rec.teacherStatus) {
+                    rec.teacherStatus = 'มา';
+                    rec.markedBy = currentSession.displayName;
+                    rec.markedAt = new Date().toISOString();
+                    appData.attendance[key] = rec;
+                    n++;
+                }
+            });
+            saveAppData(appData);
+            showToast(`บันทึก "มา" ให้ ${n} คนที่ยังไม่ได้เช็กชื่อ`);
+            renderApp();
+        };
+
+        window.teacherSaveAttendanceNote = function(sid, sesId, note) {
+            if (!canGrade()) return;
+            const key = `${sid}_${sesId}`;
+            const rec = Object.assign({}, appData.attendance[key] || {});
+            rec.teacherNote = String(note || '').trim();
+            appData.attendance[key] = rec;
+            saveAppData(appData);
+        };
+
+        window.createAssignment = function(event) {
+            event.preventDefault();
+            if (!canGrade()) return;
+            const title = (document.getElementById('asg-title')?.value || '').trim();
+            const detail = (document.getElementById('asg-detail')?.value || '').trim();
+            const dueDate = document.getElementById('asg-due')?.value || '';
+            const maxScore = Math.max(0, Number(document.getElementById('asg-max')?.value || 10));
+            if (!title) { showToast('กรุณาใส่ชื่อการบ้าน', 'error'); return; }
+            const id = `ASG-${Date.now()}`;
+            if (!Array.isArray(appData.assignments)) appData.assignments = [];
+            appData.assignments.push({ id, subject: teachSubject, title, detail, dueDate, maxScore, createdBy: currentSession.displayName, createdAt: new Date().toISOString() });
+            teachAssignmentId = id;
+            saveAppData(appData);
+            showToast(`สั่งการบ้าน "${title}" (${teachSubject}) เรียบร้อยแล้ว`);
+            renderApp();
+        };
+
+        window.deleteAssignment = function(id) {
+            if (!canGrade()) return;
+            const a = (appData.assignments || []).find(x => x.id === id);
+            if (!a || !confirm(`ลบการบ้าน "${a.title}"?\nงานที่นักศึกษาส่งแล้วจะยังเก็บอยู่ใน Google Sheet`)) return;
+            appData.assignments = appData.assignments.filter(x => x.id !== id);
+            if (teachAssignmentId === id) teachAssignmentId = '';
+            saveAppData(appData);
+            showToast('ลบการบ้านแล้ว', 'info');
+            renderApp();
+        };
+
+        window.gradeSubmission = function(aid, sid, idx) {
+            if (!canGrade()) return;
+            const score = (document.getElementById(`grade-score-${idx}`)?.value || '').trim();
+            const feedback = (document.getElementById(`grade-fb-${idx}`)?.value || '').trim();
+            const key = subKey(aid, sid);
+            appData.submissions[key] = Object.assign({ assignmentId: aid, studentId: sid }, appData.submissions[key] || {}, {
+                score, feedback, gradedBy: currentSession.displayName, gradedAt: new Date().toISOString()
+            });
+            saveAppData(appData);
+            showToast('บันทึกคะแนนการบ้านแล้ว');
+            renderApp();
+        };
+
+        window.saveReview = function(sid, kind) {
+            if (!canGrade()) return;
+            const subj = document.getElementById('rev-subject')?.value || teachSubject;
+            const score = (document.getElementById('rev-score')?.value || '').trim();
+            const maxScore = Number(document.getElementById('rev-max')?.value || 10);
+            const comment = (document.getElementById('rev-comment')?.value || '').trim();
+            if (!score && !comment) { showToast('กรุณาใส่คะแนนหรือข้อคิดเห็น', 'error'); return; }
+            appData.reviews[reviewKey(sid, subj, kind)] = {
+                studentId: sid, subject: subj, kind, score, maxScore, comment,
+                by: currentSession.displayName, at: new Date().toISOString()
+            };
+            teachSubject = subj;
+            saveAppData(appData);
+            showToast(`บันทึกคะแนนบันทึกปฏิบัติธรรม (${subj}) แล้ว`);
+            renderApp();
+        };
+
+        window.gradeCounselingLog = function(logId) {
+            if (!canGrade()) return;
+            const log = (appData.logs || []).find(l => l.id === logId);
+            if (!log) return;
+            log.subject = document.getElementById(`log-subj-${logId}`)?.value || '';
+            log.score = (document.getElementById(`log-score-${logId}`)?.value || '').trim();
+            log.maxScore = Number(document.getElementById(`log-max-${logId}`)?.value || 10);
+            log.instructorFeedback = (document.getElementById(`log-fb-${logId}`)?.value || '').trim();
+            log.reviewedBy = currentSession.displayName;
+            log.reviewedAt = new Date().toISOString();
+            saveAppData(appData);
+            showToast('บันทึกคะแนนและข้อคิดเห็นแล้ว');
+            renderApp();
+        };
+
+        window.downloadGradebookCsv = function() {
+            const rows = [['รหัส', 'ชื่อ-นามสกุล', 'วิชา', 'เข้าเรียน', 'จำนวนครั้ง', 'ร้อยละ', 'การบ้าน (คะแนน)', 'การบ้าน (เต็ม)', 'ส่งการบ้าน', 'ปฏิบัติธรรม (คะแนน)', 'ปฏิบัติธรรม (เต็ม)', 'การปรึกษา (คะแนน)', 'การปรึกษา (เต็ม)', 'รวม', 'เต็ม']];
+            (appData.students || []).forEach(st => {
+                const s = subjectSummary(st.id, teachSubject);
+                rows.push([st.code, st.name, teachSubject, s.present, s.sessions, s.attPct, s.hwScore, s.hwMax, `${s.hwSubmitted}/${s.asgCount}`, s.pScore, s.pMax, s.cScore, s.cMax, s.total, s.totalMax]);
+            });
+            const csv = '﻿' + rows.map(r => r.map(v => `"${String(v ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+            a.download = `คะแนน_${teachSubject.replace(/\s/g, '')}_${getTodayISO()}.csv`;
+            document.body.appendChild(a);
+            a.click();
+            setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+        };
+
+        // ---------- การทำงานของนักศึกษา ----------
+        window.submitHomework = function(event, aid, idx) {
+            event.preventDefault();
+            if (currentSession?.role !== 'student') return;
+            const text = (document.getElementById(`hw-text-${idx}`)?.value || '').trim();
+            const link = (document.getElementById(`hw-link-${idx}`)?.value || '').trim();
+            if (!text && !link) { showToast('กรุณาพิมพ์คำตอบหรือใส่ลิงก์งาน', 'error'); return; }
+            const key = subKey(aid, currentSession.userId);
+            appData.submissions[key] = Object.assign({}, appData.submissions[key] || {}, {
+                assignmentId: aid, studentId: currentSession.userId, text, link, submittedAt: new Date().toISOString()
+            });
+            saveAppData(appData);
+            showToast('ส่งการบ้านเรียบร้อยแล้ว');
+            renderApp();
+        };
+
+        // ---------- ส่วนแสดงผล ----------
+        function renderSubjectPicker(onclickVar) {
+            return `
+            <div class="flex flex-wrap gap-2">
+                ${SUBJECTS.map(s => `
+                    <button type="button" onclick="${onclickVar} = '${s.code}'; teachAssignmentId = ''; renderApp();" class="px-3.5 py-2 rounded-xl font-bold transition border ${teachSubject === s.code ? 'bg-sage-700 text-white border-sage-800 shadow-sm' : 'bg-white text-earth-800 border-cream-200 hover:bg-cream-100'}">
+                        ${escapeHTML(s.code)} <span class="font-normal hidden sm:inline">${escapeHTML(s.name)}</span>
+                    </button>
+                `).join('')}
+            </div>`;
+        }
+
+        function scorePill(score, max) {
+            if (!hasScore(score)) return '<span class="px-2.5 py-0.5 rounded-full bg-gray-100 text-gray-500 font-semibold">ยังไม่ให้คะแนน</span>';
+            return `<span class="px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-900 font-bold">${escapeHTML(score)} / ${escapeHTML(max || '-')}</span>`;
+        }
+
+        function renderTeachAttendance() {
+            const sessions = appData.sessions || [];
+            if (!teachSessionId || !sessions.some(s => s.id === teachSessionId)) teachSessionId = defaultTeachSession();
+            const ses = sessions.find(s => s.id === teachSessionId);
+            const students = appData.students || [];
+            const counts = { 'มา': 0, 'สาย': 0, 'ลา': 0, 'ขาด': 0, '': 0 };
+            students.forEach(st => { counts[attRecord(st.id, teachSessionId).teacherStatus || ''] = (counts[attRecord(st.id, teachSessionId).teacherStatus || ''] || 0) + 1; });
+            return `
+            <div class="space-y-4">
+                <div class="flex flex-col lg:flex-row lg:items-center gap-3">
+                    <label class="font-bold text-earth-800 shrink-0">เลือกครั้งที่เรียน:</label>
+                    <select onchange="teachSessionId = this.value; renderApp();" class="flex-1 px-4 py-3 rounded-xl border border-cream-200 bg-cream-50 font-semibold">
+                        ${sessions.map(s => `<option value="${escapeHTML(s.id)}" ${s.id === teachSessionId ? 'selected' : ''}>${formatThaiDate(s.date)} — ${escapeHTML(s.title)}</option>`).join('')}
+                    </select>
+                    <button type="button" onclick="teacherMarkAllPresent('${escapeHTML(teachSessionId)}')" class="px-4 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold shrink-0">✓ "มา" ทุกคนที่ยังไม่บันทึก</button>
+                </div>
+                ${ses ? `<div class="text-gray-600">${escapeHTML(ses.time)} • ผู้สอน: ${escapeHTML(ses.instructor)}</div>` : ''}
+                <div class="grid grid-cols-2 sm:grid-cols-5 gap-2 text-center">
+                    ${ATT_STATUSES.map(a => `<div class="p-2.5 rounded-xl border ${a.off}"><div class="text-[11px]">${a.v}</div><div class="text-lg font-bold">${counts[a.v] || 0}</div></div>`).join('')}
+                    <div class="p-2.5 rounded-xl border bg-gray-50 text-gray-700 border-gray-200"><div class="text-[11px]">ยังไม่บันทึก</div><div class="text-lg font-bold">${counts[''] || 0}</div></div>
+                </div>
+                <div class="overflow-x-auto border border-cream-200 rounded-2xl">
+                    <table class="w-full text-left border-collapse min-w-[760px]">
+                        <thead><tr class="bg-sage-100 text-earth-800 border-b border-cream-200">
+                            <th class="p-3 w-10">#</th><th class="p-3">รหัส • ชื่อ-นามสกุล</th><th class="p-3">นักศึกษาเช็กชื่อเอง</th><th class="p-3">สถานะ (อาจารย์บันทึก)</th><th class="p-3">หมายเหตุ</th>
+                        </tr></thead>
+                        <tbody class="divide-y divide-cream-200">
+                            ${students.map((st, i) => {
+                                const rec = attRecord(st.id, teachSessionId);
+                                return `
+                                <tr class="hover:bg-cream-50/70">
+                                    <td class="p-3 text-gray-500">${i + 1}</td>
+                                    <td class="p-3 font-semibold text-earth-800">${escapeHTML(st.code)} • ${escapeHTML(st.name)}</td>
+                                    <td class="p-3 text-gray-700 whitespace-nowrap">${rec.checkInTime ? `เข้า ${escapeHTML(rec.checkInTime)}` : '-'}${rec.checkOutTime ? ` / ออก ${escapeHTML(rec.checkOutTime)}` : ''}</td>
+                                    <td class="p-3"><div class="flex flex-wrap gap-1.5">
+                                        ${ATT_STATUSES.map(a => `<button type="button" onclick="teacherMarkAttendance('${escapeHTML(st.id)}', '${escapeHTML(teachSessionId)}', '${a.v}')" class="px-3 py-1.5 rounded-lg border font-bold transition ${rec.teacherStatus === a.v ? a.on : a.off}">${a.v}</button>`).join('')}
+                                    </div></td>
+                                    <td class="p-3"><input type="text" value="${escapeHTML(rec.teacherNote || '')}" onchange="teacherSaveAttendanceNote('${escapeHTML(st.id)}', '${escapeHTML(teachSessionId)}', this.value)" placeholder="เช่น ลาป่วย" class="w-36 px-2.5 py-1.5 rounded-lg border border-cream-200 bg-white"></td>
+                                </tr>`;
+                            }).join('')}
+                        </tbody>
+                    </table>
+                </div>
+            </div>`;
+        }
+
+        function renderTeachHomework() {
+            const asgs = (appData.assignments || []).filter(a => a.subject === teachSubject);
+            if (teachAssignmentId && !asgs.some(a => a.id === teachAssignmentId)) teachAssignmentId = '';
+            const active = asgs.find(a => a.id === teachAssignmentId);
+            const students = appData.students || [];
+            const subCount = a => students.filter(st => { const s = appData.submissions[subKey(a.id, st.id)]; return s && (s.text || s.link); }).length;
+            return `
+            <div class="space-y-4">
+                ${renderSubjectPicker('teachSubject')}
+                <div class="grid grid-cols-1 lg:grid-cols-12 gap-4">
+                    <form onsubmit="createAssignment(event)" class="lg:col-span-5 p-4 rounded-2xl bg-sage-50/70 border border-sage-200 space-y-3">
+                        <div class="font-bold text-sm text-earth-800">สั่งการบ้านใหม่ • ${escapeHTML(teachSubject)}</div>
+                        <div><label class="block font-semibold text-gray-700 mb-1">ชื่อการบ้าน</label><input id="asg-title" type="text" required placeholder="เช่น สรุปหลักสติปัฏฐาน 4" class="w-full px-3 py-2 rounded-xl border border-cream-200 bg-white"></div>
+                        <div><label class="block font-semibold text-gray-700 mb-1">รายละเอียด / คำสั่ง</label><textarea id="asg-detail" rows="3" placeholder="อธิบายสิ่งที่ต้องทำ ความยาว รูปแบบการส่ง..." class="w-full px-3 py-2 rounded-xl border border-cream-200 bg-white"></textarea></div>
+                        <div class="grid grid-cols-2 gap-3">
+                            <div><label class="block font-semibold text-gray-700 mb-1">กำหนดส่ง</label><input id="asg-due" type="date" class="w-full px-3 py-2 rounded-xl border border-cream-200 bg-white"></div>
+                            <div><label class="block font-semibold text-gray-700 mb-1">คะแนนเต็ม</label><input id="asg-max" type="number" min="0" value="10" class="w-full px-3 py-2 rounded-xl border border-cream-200 bg-white"></div>
+                        </div>
+                        <button type="submit" class="w-full py-2.5 rounded-xl bg-sage-600 hover:bg-sage-700 text-white font-bold">+ สั่งการบ้าน</button>
+                    </form>
+                    <div class="lg:col-span-7 space-y-2">
+                        <div class="font-bold text-sm text-earth-800">การบ้านวิชา ${escapeHTML(teachSubject)} (${asgs.length} ชิ้น)</div>
+                        ${asgs.length === 0 ? '<div class="p-6 text-center text-gray-500 rounded-xl border border-dashed border-cream-200">ยังไม่มีการบ้านในวิชานี้</div>' : asgs.map(a => `
+                            <div class="p-3.5 rounded-xl border ${a.id === teachAssignmentId ? 'bg-emerald-50/80 border-emerald-300' : 'bg-white border-cream-200'} flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                                <div class="min-w-0">
+                                    <div class="font-bold text-earth-800 break-words">${escapeHTML(a.title)}</div>
+                                    <div class="text-gray-600">กำหนดส่ง ${a.dueDate ? formatThaiDate(a.dueDate) : '-'} • เต็ม ${escapeHTML(a.maxScore)} คะแนน • ส่งแล้ว ${subCount(a)}/${students.length} คน</div>
+                                    ${a.detail ? `<div class="text-gray-700 mt-1 break-words">${escapeHTML(a.detail)}</div>` : ''}
+                                </div>
+                                <div class="flex gap-2 shrink-0">
+                                    <button type="button" onclick="teachAssignmentId = '${escapeHTML(a.id)}'; renderApp();" class="px-3.5 py-2 rounded-xl bg-sage-600 hover:bg-sage-700 text-white font-bold">ตรวจ / ให้คะแนน</button>
+                                    <button type="button" onclick="deleteAssignment('${escapeHTML(a.id)}')" class="px-3 py-2 rounded-xl bg-red-50 hover:bg-red-100 text-red-700 font-semibold">ลบ</button>
+                                </div>
+                            </div>`).join('')}
+                    </div>
+                </div>
+                ${active ? `
+                <div class="p-4 rounded-2xl border-2 border-emerald-200 bg-white space-y-3">
+                    <div class="font-bold text-sm text-earth-800">ตรวจการบ้าน: ${escapeHTML(active.title)} (เต็ม ${escapeHTML(active.maxScore)})</div>
+                    <div class="overflow-x-auto border border-cream-200 rounded-xl">
+                        <table class="w-full text-left border-collapse min-w-[860px]">
+                            <thead><tr class="bg-sage-100 text-earth-800 border-b border-cream-200">
+                                <th class="p-2.5">นักศึกษา</th><th class="p-2.5">งานที่ส่ง</th><th class="p-2.5 w-24">คะแนน</th><th class="p-2.5">ข้อคิดเห็น</th><th class="p-2.5 w-24"></th>
+                            </tr></thead>
+                            <tbody class="divide-y divide-cream-200">
+                                ${students.map((st, i) => {
+                                    const sub = appData.submissions[subKey(active.id, st.id)] || {};
+                                    const sent = sub.text || sub.link;
+                                    return `
+                                    <tr class="${sent ? '' : 'bg-gray-50/60'} align-top">
+                                        <td class="p-2.5 font-semibold text-earth-800">${escapeHTML(st.code)}<br><span class="font-normal">${escapeHTML(st.name)}</span></td>
+                                        <td class="p-2.5 text-gray-800 max-w-md">
+                                            ${sent ? `
+                                                <div class="text-[11px] text-sage-700 font-semibold">ส่งเมื่อ ${sub.submittedAt ? new Date(sub.submittedAt).toLocaleString('th-TH') : '-'}</div>
+                                                ${sub.text ? `<div class="whitespace-pre-wrap break-words">${escapeHTML(sub.text)}</div>` : ''}
+                                                ${sub.link && window.normalizeReplayUrl(sub.link) ? `<a href="${escapeHTML(window.normalizeReplayUrl(sub.link))}" target="_blank" rel="noopener noreferrer" class="text-sage-700 underline break-all">${escapeHTML(sub.link)}</a>` : (sub.link ? `<div class="break-all">${escapeHTML(sub.link)}</div>` : '')}
+                                            ` : '<span class="text-gray-400">ยังไม่ส่ง</span>'}
+                                        </td>
+                                        <td class="p-2.5"><input id="grade-score-${i}" type="number" min="0" max="${escapeHTML(active.maxScore)}" step="0.5" value="${escapeHTML(sub.score ?? '')}" class="w-20 px-2 py-1.5 rounded-lg border border-cream-200"></td>
+                                        <td class="p-2.5"><textarea id="grade-fb-${i}" rows="2" placeholder="ข้อคิดเห็นถึงนักศึกษา..." class="w-full px-2.5 py-1.5 rounded-lg border border-cream-200">${escapeHTML(sub.feedback || '')}</textarea></td>
+                                        <td class="p-2.5"><button type="button" onclick="gradeSubmission('${escapeHTML(active.id)}', '${escapeHTML(st.id)}', ${i})" class="px-3 py-1.5 rounded-lg ${hasScore(sub.score) ? 'bg-emerald-100 text-emerald-900' : 'bg-sage-600 text-white'} font-bold">${hasScore(sub.score) ? 'แก้ไข' : 'บันทึก'}</button></td>
+                                    </tr>`;
+                                }).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>` : ''}
+            </div>`;
+        }
+
+        function renderTeachPractice() {
+            const students = appData.students || [];
+            if (!teachStudentId || !students.some(s => s.id === teachStudentId)) teachStudentId = (students[0] || {}).id || '';
+            const st = students.find(s => s.id === teachStudentId) || {};
+            const store = (appData.practiceByUser || {})[teachStudentId] || {};
+            const d30 = Array.isArray(store.daily30) ? store.daily30 : [];
+            const cls = Array.isArray(store.classPractice) ? store.classPractice : [];
+            const journal = store.journal || {};
+            const d30Mins = d30.reduce((a, x) => a + (Number(x.durationMinutes) || 0), 0);
+            const clsMins = cls.reduce((a, x) => a + (Number(x.hours) || 0) * 60 + (Number(x.minutes) || 0), 0);
+            const days = new Set(d30.map(x => x.date).filter(Boolean)).size;
+            const journalDays = Object.keys(journal).filter(k => journal[k] && (journal[k].truth || journal[k].action)).sort((a, b) => a - b);
+            const curReview = (appData.reviews || {})[reviewKey(teachStudentId, teachSubject, 'practice')] || {};
+            const myReviews = SUBJECTS.map(s => ({ s, r: (appData.reviews || {})[reviewKey(teachStudentId, s.code, 'practice')] })).filter(x => x.r);
+            return `
+            <div class="space-y-4">
+                <div class="flex flex-col sm:flex-row sm:items-center gap-3">
+                    <label class="font-bold text-earth-800 shrink-0">เลือกนักศึกษา:</label>
+                    <select onchange="teachStudentId = this.value; renderApp();" class="flex-1 px-4 py-3 rounded-xl border border-cream-200 bg-cream-50 font-semibold">
+                        ${students.map(s => {
+                            const st2 = (appData.practiceByUser || {})[s.id] || {};
+                            const n = Array.isArray(st2.daily30) ? st2.daily30.length : 0;
+                            const reviewed = SUBJECTS.some(x => (appData.reviews || {})[reviewKey(s.id, x.code, 'practice')]);
+                            return `<option value="${escapeHTML(s.id)}" ${s.id === teachStudentId ? 'selected' : ''}>${escapeHTML(s.code)} • ${escapeHTML(s.name)} — ${n} รอบ${reviewed ? ' ✓ ตรวจแล้ว' : ''}</option>`;
+                        }).join('')}
+                    </select>
+                </div>
+                <div class="grid grid-cols-2 lg:grid-cols-4 gap-2 text-center">
+                    <div class="p-3 rounded-xl bg-sage-50 border border-sage-200"><div class="text-[11px] text-gray-600">วันที่ฝึก (30 วัน)</div><div class="font-bold text-sage-800">${days} / 30 วัน</div></div>
+                    <div class="p-3 rounded-xl bg-emerald-50 border border-emerald-200"><div class="text-[11px] text-gray-600">เวลาฝึกในชีวิตประจำวัน</div><div class="font-bold text-emerald-800">${formatMinutesToThaiDuration(d30Mins)}</div></div>
+                    <div class="p-3 rounded-xl bg-teal-50 border border-teal-200"><div class="text-[11px] text-gray-600">ปฏิบัติในชั้นเรียน</div><div class="font-bold text-teal-800">${formatMinutesToThaiDuration(clsMins)}</div></div>
+                    <div class="p-3 rounded-xl bg-cream-50 border border-cream-200"><div class="text-[11px] text-gray-600">บันทึกโปรแกรม 28 วัน</div><div class="font-bold text-earth-800">${journalDays.length} วัน</div></div>
+                </div>
+                <div class="grid grid-cols-1 lg:grid-cols-12 gap-4">
+                    <div class="lg:col-span-7 space-y-3">
+                        <div class="font-bold text-earth-800">บันทึกการปฏิบัติในชีวิตประจำวัน (${d30.length} รอบ)</div>
+                        <div class="space-y-2 max-h-80 overflow-y-auto pr-1">
+                            ${d30.length === 0 ? '<div class="text-gray-500 py-3 text-center">ยังไม่มีบันทึก</div>' : d30.map(e => `
+                                <div class="p-3 rounded-xl border border-cream-200 bg-cream-50/50">
+                                    <div class="flex flex-wrap gap-2 items-center"><b>${formatThaiDate(e.date)}</b><span class="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-900 font-bold">${escapeHTML(e.startTime || '')}–${escapeHTML(e.endTime || '')} (${formatMinutesToThaiDuration(e.durationMinutes)})</span>${e.programDay ? `<span class="text-sage-800">โปรแกรมวันที่ ${escapeHTML(e.programDay)}</span>` : ''}</div>
+                                    <div class="font-semibold text-sage-900">${escapeHTML(e.activity || '')} <span class="font-normal text-gray-600">• ${escapeHTML(e.place || '')}</span></div>
+                                    ${e.reflection ? `<div class="text-gray-700">สภาวธรรม: ${escapeHTML(e.reflection)}</div>` : ''}
+                                </div>`).join('')}
+                        </div>
+                        ${journalDays.length ? `
+                        <div class="font-bold text-earth-800 pt-1">บันทึกโปรแกรม 28 วัน</div>
+                        <div class="space-y-2 max-h-64 overflow-y-auto pr-1">
+                            ${journalDays.map(d => `<div class="p-3 rounded-xl border border-sage-200 bg-sage-50/50"><b>วันที่ ${escapeHTML(d)}</b>${journal[d].truth ? `<div><b>สิ่งที่รู้จริง:</b> ${escapeHTML(journal[d].truth)}</div>` : ''}${journal[d].action ? `<div><b>การกระทำ/คำถาม:</b> ${escapeHTML(journal[d].action)}</div>` : ''}${journal[d].discomfort ? `<div class="text-gray-600"><b>สิ่งไม่สบาย:</b> ${escapeHTML(journal[d].discomfort)}</div>` : ''}</div>`).join('')}
+                        </div>` : ''}
+                        ${cls.length ? `
+                        <div class="font-bold text-earth-800 pt-1">ปฏิบัติธรรมในชั้นเรียน (${cls.length} รายการ)</div>
+                        <div class="space-y-1.5">${cls.map(c => `<div class="p-2.5 rounded-lg border border-teal-200 bg-teal-50/50">${formatThaiDate(c.date)} • ${escapeHTML(c.sessionTitle || '')} • <b>${escapeHTML(c.hours)} ชม. ${escapeHTML(c.minutes || 0)} น.</b>${c.note ? ` — ${escapeHTML(c.note)}` : ''}</div>`).join('')}</div>` : ''}
+                    </div>
+                    <div class="lg:col-span-5 p-4 rounded-2xl bg-white border-2 border-sage-200 space-y-3 self-start">
+                        <div class="font-bold text-sm text-earth-800">ให้คะแนนและข้อคิดเห็น • ${escapeHTML(st.name || '')}</div>
+                        <div><label class="block font-semibold text-gray-700 mb-1">วิชา</label>
+                            <select id="rev-subject" onchange="teachSubject = this.value; renderApp();" class="w-full px-3 py-2 rounded-xl border border-cream-200 bg-cream-50">
+                                ${SUBJECTS.map(s => `<option value="${s.code}" ${s.code === teachSubject ? 'selected' : ''}>${s.code} ${escapeHTML(s.name)}</option>`).join('')}
+                            </select></div>
+                        <div class="grid grid-cols-2 gap-3">
+                            <div><label class="block font-semibold text-gray-700 mb-1">คะแนน</label><input id="rev-score" type="number" min="0" step="0.5" value="${escapeHTML(curReview.score ?? '')}" class="w-full px-3 py-2 rounded-xl border border-cream-200"></div>
+                            <div><label class="block font-semibold text-gray-700 mb-1">คะแนนเต็ม</label><input id="rev-max" type="number" min="0" value="${escapeHTML(curReview.maxScore || 10)}" class="w-full px-3 py-2 rounded-xl border border-cream-200"></div>
+                        </div>
+                        <div><label class="block font-semibold text-gray-700 mb-1">ข้อคิดเห็นถึงนักศึกษา</label><textarea id="rev-comment" rows="4" placeholder="ข้อสังเกตการปฏิบัติ จุดเด่น สิ่งที่ควรฝึกต่อ..." class="w-full px-3 py-2 rounded-xl border border-cream-200">${escapeHTML(curReview.comment || '')}</textarea></div>
+                        <button type="button" onclick="saveReview('${escapeHTML(teachStudentId)}', 'practice')" class="w-full py-2.5 rounded-xl bg-sage-600 hover:bg-sage-700 text-white font-bold">บันทึกคะแนนบันทึกปฏิบัติธรรม</button>
+                        ${myReviews.length ? `<div class="pt-2 border-t border-cream-200 space-y-1.5">${myReviews.map(x => `<div><b>${x.s.code}</b> ${scorePill(x.r.score, x.r.maxScore)} <span class="text-gray-500 text-[11px]">โดย ${escapeHTML(x.r.by || '')}</span>${x.r.comment ? `<div class="text-gray-700">${escapeHTML(x.r.comment)}</div>` : ''}</div>`).join('')}</div>` : ''}
+                    </div>
+                </div>
+            </div>`;
+        }
+
+        function renderTeachCounseling() {
+            const students = appData.students || [];
+            let logs = (appData.logs || []).slice();
+            if (teachLogStudent) logs = logs.filter(l => l.studentId === teachLogStudent);
+            const pendingCount = (appData.logs || []).filter(l => !hasScore(l.score)).length;
+            if (teachLogFilter === 'pending') logs = logs.filter(l => !hasScore(l.score));
+            return `
+            <div class="space-y-4">
+                <div class="flex flex-col sm:flex-row sm:items-center gap-2">
+                    <div class="flex gap-2">
+                        <button type="button" onclick="teachLogFilter = 'pending'; renderApp();" class="px-3.5 py-2 rounded-xl font-bold border ${teachLogFilter === 'pending' ? 'bg-sage-700 text-white border-sage-800' : 'bg-white border-cream-200'}">รอตรวจ (${pendingCount})</button>
+                        <button type="button" onclick="teachLogFilter = 'all'; renderApp();" class="px-3.5 py-2 rounded-xl font-bold border ${teachLogFilter === 'all' ? 'bg-sage-700 text-white border-sage-800' : 'bg-white border-cream-200'}">ทั้งหมด (${(appData.logs || []).length})</button>
+                    </div>
+                    <select onchange="teachLogStudent = this.value; renderApp();" class="flex-1 px-3.5 py-2 rounded-xl border border-cream-200 bg-cream-50">
+                        <option value="">นักศึกษาทุกคน</option>
+                        ${students.map(s => `<option value="${escapeHTML(s.id)}" ${s.id === teachLogStudent ? 'selected' : ''}>${escapeHTML(s.code)} • ${escapeHTML(s.name)}</option>`).join('')}
+                    </select>
+                </div>
+                ${logs.length === 0 ? '<div class="p-8 text-center text-gray-500 rounded-xl border border-dashed border-cream-200">ไม่มีแบบบันทึกที่ต้องตรวจ</div>' : logs.map(item => `
+                    <div class="p-4 rounded-2xl border ${hasScore(item.score) ? 'border-emerald-200 bg-emerald-50/30' : 'border-cream-200 bg-white'} grid grid-cols-1 lg:grid-cols-12 gap-4">
+                        <div class="lg:col-span-7 space-y-1.5">
+                            <div class="flex flex-wrap items-center justify-between gap-2 border-b border-cream-200 pb-2">
+                                <span class="font-bold text-earth-800">${escapeHTML(item.studentCode)} • ${escapeHTML(item.studentName)}</span>
+                                <span class="text-sage-700 font-semibold">${item.date ? formatThaiDate(item.date) : 'ไม่ระบุวันที่'}${item.counselingDuration ? ` • ${escapeHTML(item.counselingDuration)}` : ''}${item.counselingMode ? ` • ${escapeHTML(item.counselingMode)}` : ''}</span>
+                            </div>
+                            ${item.conversationWith ? `<div><b>สนทนากับใคร:</b> ${escapeHTML(item.conversationWith)}</div>` : ''}
+                            ${item.selfObsBefore ? `<div><b>1. ก่อนเริ่ม:</b> ${escapeHTML(item.selfObsBefore)}</div>` : ''}
+                            ${item.selfObsDuring ? `<div><b>2. ระหว่างสนทนา:</b> ${escapeHTML(item.selfObsDuring)}</div>` : ''}
+                            ${item.selfObsAfter ? `<div><b>3. หลังจบ:</b> ${escapeHTML(item.selfObsAfter)}</div>` : ''}
+                            ${item.strengthWell ? `<div class="text-emerald-900"><b>4. สิ่งที่ทำได้ดี:</b> ${escapeHTML(item.strengthWell)}</div>` : ''}
+                            ${item.areaImprove ? `<div class="text-amber-900"><b>5. สิ่งที่ต้องพัฒนา:</b> ${escapeHTML(item.areaImprove)}</div>` : ''}
+                            ${item.counselingNote ? `<div class="text-gray-700"><b>บันทึกเพิ่มเติม:</b> ${escapeHTML(item.counselingNote)}</div>` : ''}
+                        </div>
+                        <div class="lg:col-span-5 space-y-2">
+                            <div class="grid grid-cols-3 gap-2">
+                                <div class="col-span-3"><label class="block font-semibold text-gray-700 mb-1">วิชา</label>
+                                    <select id="log-subj-${escapeHTML(item.id)}" class="w-full px-3 py-2 rounded-xl border border-cream-200 bg-cream-50">
+                                        ${SUBJECTS.map(s => `<option value="${s.code}" ${(item.subject || 'จว 004') === s.code ? 'selected' : ''}>${s.code} ${escapeHTML(s.name)}</option>`).join('')}
+                                    </select></div>
+                                <div class="col-span-2"><label class="block font-semibold text-gray-700 mb-1">คะแนน</label><input id="log-score-${escapeHTML(item.id)}" type="number" min="0" step="0.5" value="${escapeHTML(item.score ?? '')}" class="w-full px-3 py-2 rounded-xl border border-cream-200"></div>
+                                <div><label class="block font-semibold text-gray-700 mb-1">เต็ม</label><input id="log-max-${escapeHTML(item.id)}" type="number" min="0" value="${escapeHTML(item.maxScore || 10)}" class="w-full px-3 py-2 rounded-xl border border-cream-200"></div>
+                            </div>
+                            <textarea id="log-fb-${escapeHTML(item.id)}" rows="3" placeholder="ข้อคิดเห็น / คำแนะนำสำหรับนักศึกษา..." class="w-full px-3 py-2 rounded-xl border border-cream-200">${escapeHTML(item.instructorFeedback || '')}</textarea>
+                            <button type="button" onclick="gradeCounselingLog('${escapeHTML(item.id)}')" class="w-full py-2.5 rounded-xl bg-sage-600 hover:bg-sage-700 text-white font-bold">${hasScore(item.score) ? 'แก้ไขคะแนน / ข้อคิดเห็น' : 'บันทึกคะแนนและข้อคิดเห็น'}</button>
+                            ${item.reviewedBy ? `<div class="text-[11px] text-gray-500">ตรวจโดย ${escapeHTML(item.reviewedBy)}</div>` : ''}
+                        </div>
+                    </div>`).join('')}
+            </div>`;
+        }
+
+        function renderTeachGrades() {
+            const students = appData.students || [];
+            return `
+            <div class="space-y-4">
+                <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+                    ${renderSubjectPicker('teachSubject')}
+                    <button type="button" onclick="downloadGradebookCsv()" class="px-4 py-2.5 rounded-xl bg-earth-800 hover:bg-earth-700 text-white font-bold shrink-0">📥 ดาวน์โหลด CSV (${escapeHTML(teachSubject)})</button>
+                </div>
+                <p class="text-gray-600">เข้าเรียนนับ "มา" และ "สาย" ที่อาจารย์บันทึก (ถ้าอาจารย์ยังไม่บันทึก ใช้การเช็กชื่อเข้าเรียนของนักศึกษา) • คะแนนรวม = การบ้าน + บันทึกปฏิบัติธรรม + บันทึกการปรึกษาในวิชานี้</p>
+                <div class="overflow-x-auto border border-cream-200 rounded-2xl">
+                    <table class="w-full text-left border-collapse min-w-[860px]">
+                        <thead><tr class="bg-sage-100 text-earth-800 border-b border-cream-200">
+                            <th class="p-3">นักศึกษา</th><th class="p-3">เข้าเรียน</th><th class="p-3">การบ้าน</th><th class="p-3">ปฏิบัติธรรม</th><th class="p-3">การปรึกษา</th><th class="p-3">รวม</th>
+                        </tr></thead>
+                        <tbody class="divide-y divide-cream-200">
+                            ${students.map(st => {
+                                const s = subjectSummary(st.id, teachSubject);
+                                const attCls = s.attPct >= 80 ? 'text-emerald-800' : 'text-red-700';
+                                return `
+                                <tr class="hover:bg-cream-50/70">
+                                    <td class="p-3 font-semibold text-earth-800">${escapeHTML(st.code)} • ${escapeHTML(st.name)}</td>
+                                    <td class="p-3 font-bold ${attCls}">${s.present}/${s.sessions} (${s.attPct}%)</td>
+                                    <td class="p-3">${s.asgCount ? `<b>${s.hwScore}</b> / ${s.hwMax} <span class="text-gray-500">(ส่ง ${s.hwSubmitted}/${s.asgCount})</span>` : '<span class="text-gray-400">-</span>'}</td>
+                                    <td class="p-3">${s.practice ? `<b>${s.pScore}</b> / ${s.pMax}` : '<span class="text-gray-400">-</span>'}</td>
+                                    <td class="p-3">${s.cCount ? `<b>${s.cScore}</b> / ${s.cMax} <span class="text-gray-500">(${s.cCount} ฉบับ)</span>` : '<span class="text-gray-400">-</span>'}</td>
+                                    <td class="p-3 font-bold text-sage-800">${s.totalMax ? `${s.total} / ${s.totalMax}` : '-'}</td>
+                                </tr>`;
+                            }).join('')}
+                        </tbody>
+                    </table>
+                </div>
+            </div>`;
+        }
+
+        function renderTeachingTab() {
+            const subTabs = [
+                ['attendance', '✅ เช็กชื่อนักศึกษา'],
+                ['homework', '📝 สั่งและตรวจการบ้าน'],
+                ['practice', '🧘 ตรวจบันทึกปฏิบัติธรรม'],
+                ['counseling', '💬 ตรวจบันทึกการปรึกษา'],
+                ['grades', '📊 สรุปคะแนนรายวิชา']
+            ];
+            const body = teachSubTab === 'homework' ? renderTeachHomework()
+                : teachSubTab === 'practice' ? renderTeachPractice()
+                : teachSubTab === 'counseling' ? renderTeachCounseling()
+                : teachSubTab === 'grades' ? renderTeachGrades()
+                : renderTeachAttendance();
+            return `
+            <div class="space-y-5 text-xs">
+                <div class="p-5 rounded-2xl bg-gradient-to-r from-teal-800 via-sage-700 to-earth-800 text-white shadow-sm">
+                    <h2 class="text-lg font-bold">งานสอนของอาจารย์ผู้สอน</h2>
+                    <p class="text-sage-100">เช็กชื่อนักศึกษา สั่งและตรวจการบ้าน ตรวจแบบบันทึกการปฏิบัติธรรมและการให้การปรึกษา ให้ข้อคิดเห็นและคะแนนแยกรายวิชา — ทุกอย่างบันทึกลง Google Sheet ทันที</p>
+                </div>
+                <div class="flex items-center gap-2 overflow-x-auto pb-1">
+                    ${subTabs.map(([id, label]) => `<button type="button" onclick="teachSubTab = '${id}'; renderApp();" class="px-4 py-2.5 rounded-xl whitespace-nowrap font-bold transition ${teachSubTab === id ? 'bg-earth-800 text-white shadow-sm' : 'bg-white text-earth-800 border border-cream-200 hover:bg-cream-100'}">${label}</button>`).join('')}
+                </div>
+                <div class="bg-white p-5 sm:p-6 rounded-2xl border border-cream-200">${body}</div>
+            </div>`;
+        }
+
+        function renderHomeworkTab() {
+            const uid = currentSession.userId;
+            const subs = appData.submissions || {};
+            let idx = 0;
+            return `
+            <div class="space-y-5 text-xs">
+                <div class="p-5 rounded-2xl bg-gradient-to-r from-sage-700 via-teal-700 to-earth-800 text-white shadow-sm">
+                    <h2 class="text-lg font-bold">การบ้านและคะแนนของฉัน</h2>
+                    <p class="text-sage-100">ส่งการบ้านแต่ละวิชา (พิมพ์คำตอบหรือแนบลิงก์ Google Drive) และดูคะแนน/ข้อคิดเห็นจากอาจารย์</p>
+                </div>
+                ${SUBJECTS.map(subj => {
+                    const asgs = (appData.assignments || []).filter(a => a.subject === subj.code);
+                    const sum = subjectSummary(uid, subj.code);
+                    const practice = sum.practice;
+                    const gradedLogs = (appData.logs || []).filter(l => l.studentId === uid && l.subject === subj.code && (hasScore(l.score) || l.instructorFeedback));
+                    return `
+                    <div class="bg-white p-5 rounded-2xl border border-cream-200 space-y-3">
+                        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-cream-200 pb-3">
+                            <div><span class="px-3 py-0.5 rounded-full bg-sage-100 text-sage-900 font-bold">${escapeHTML(subj.code)}</span> <span class="font-bold text-sm text-earth-800">${escapeHTML(subj.name)}</span></div>
+                            <div class="flex flex-wrap gap-2">
+                                <span class="px-3 py-1 rounded-full ${sum.attPct >= 80 ? 'bg-emerald-50 text-emerald-900' : 'bg-red-50 text-red-800'} font-bold">เข้าเรียน ${sum.present}/${sum.sessions} (${sum.attPct}%)</span>
+                                ${sum.totalMax ? `<span class="px-3 py-1 rounded-full bg-sage-50 text-sage-900 font-bold">คะแนนรวม ${sum.total}/${sum.totalMax}</span>` : ''}
+                            </div>
+                        </div>
+                        ${asgs.length === 0 ? '<div class="text-gray-500">ยังไม่มีการบ้านในวิชานี้</div>' : asgs.map(a => {
+                            const i = idx++;
+                            const sub = subs[subKey(a.id, uid)] || {};
+                            const sent = sub.text || sub.link;
+                            const overdue = a.dueDate && a.dueDate < getTodayISO() && !sent;
+                            return `
+                            <form onsubmit="submitHomework(event, '${escapeHTML(a.id)}', ${i})" class="p-4 rounded-xl border ${hasScore(sub.score) ? 'border-emerald-200 bg-emerald-50/40' : sent ? 'border-sage-200 bg-sage-50/40' : 'border-cream-200 bg-cream-50/40'} space-y-2">
+                                <div class="flex flex-wrap items-center justify-between gap-2">
+                                    <div class="font-bold text-earth-800 text-sm">${escapeHTML(a.title)}</div>
+                                    <div class="flex flex-wrap gap-1.5">
+                                        <span class="px-2.5 py-0.5 rounded-full ${overdue ? 'bg-red-100 text-red-800' : 'bg-white border border-cream-200'} font-semibold">กำหนดส่ง ${a.dueDate ? formatThaiDate(a.dueDate) : '-'}</span>
+                                        <span class="px-2.5 py-0.5 rounded-full ${sent ? 'bg-sage-100 text-sage-900' : 'bg-gray-100 text-gray-600'} font-semibold">${sent ? 'ส่งแล้ว' : 'ยังไม่ส่ง'}</span>
+                                        ${scorePill(sub.score, a.maxScore)}
+                                    </div>
+                                </div>
+                                ${a.detail ? `<div class="text-gray-700 whitespace-pre-wrap">${escapeHTML(a.detail)}</div>` : ''}
+                                <textarea id="hw-text-${i}" rows="3" placeholder="พิมพ์คำตอบ..." class="w-full px-3 py-2 rounded-xl border border-cream-200 bg-white">${escapeHTML(sub.text || '')}</textarea>
+                                <input id="hw-link-${i}" type="text" value="${escapeHTML(sub.link || '')}" placeholder="หรือวางลิงก์ไฟล์ (Google Drive / Docs) — ตั้งค่าให้อาจารย์เปิดดูได้" class="w-full px-3 py-2 rounded-xl border border-cream-200 bg-white">
+                                <div class="flex flex-wrap items-center justify-between gap-2">
+                                    <span class="text-gray-500">${sub.submittedAt ? `ส่งล่าสุด ${new Date(sub.submittedAt).toLocaleString('th-TH')}` : ''}</span>
+                                    <button type="submit" class="px-5 py-2 rounded-xl bg-sage-600 hover:bg-sage-700 text-white font-bold">${sent ? 'ส่งงานฉบับแก้ไข' : 'ส่งการบ้าน'}</button>
+                                </div>
+                                ${sub.feedback ? `<div class="p-3 rounded-lg bg-amber-50 border border-amber-200 text-amber-950"><b>ข้อคิดเห็นจากอาจารย์${sub.gradedBy ? ` (${escapeHTML(sub.gradedBy)})` : ''}:</b> ${escapeHTML(sub.feedback)}</div>` : ''}
+                            </form>`;
+                        }).join('')}
+                        ${practice ? `<div class="p-3 rounded-xl bg-teal-50 border border-teal-200"><b>คะแนนบันทึกปฏิบัติธรรม:</b> ${scorePill(practice.score, practice.maxScore)} ${practice.comment ? `<div class="mt-1 text-gray-800">${escapeHTML(practice.comment)}</div>` : ''}<div class="text-[11px] text-gray-500 mt-1">โดย ${escapeHTML(practice.by || '')}</div></div>` : ''}
+                        ${gradedLogs.length ? `<div class="space-y-1.5"><div class="font-bold text-earth-800">บันทึกการให้การปรึกษาที่อาจารย์ตรวจแล้ว</div>${gradedLogs.map(l => `<div class="p-3 rounded-xl bg-amber-50/70 border border-amber-200">${l.date ? formatThaiDate(l.date) : 'ไม่ระบุวันที่'} • ${escapeHTML((l.conversationWith || '').slice(0, 60))} ${scorePill(l.score, l.maxScore || 10)}${l.instructorFeedback ? `<div class="mt-1">${escapeHTML(l.instructorFeedback)}</div>` : ''}</div>`).join('')}</div>` : ''}
+                    </div>`;
+                }).join('')}
+            </div>`;
+        }
+
         function renderLoginScreen() {
             ensureStaffAccounts(appData);
             const cInfo = appData.courseInfo || {};
@@ -2102,6 +2690,12 @@
             ];
             if (role === 'admin') {
                 navItems.push({ id: 'admin_panel', label: '6. จัดการระบบ (Admin)', activeCls: 'bg-earth-700 text-white shadow-sm', idleCls: 'bg-cream-100 text-earth-800 border border-cream-200 hover:bg-cream-200' });
+            }
+            if (canGrade()) {
+                navItems.push({ id: 'teaching', label: `${role === 'admin' ? '7' : '6'}. งานสอน (อาจารย์)`, activeCls: 'bg-amber-700 text-white shadow-sm', idleCls: 'bg-amber-50 text-amber-950 border border-amber-200 hover:bg-amber-100' });
+            }
+            if (role === 'student') {
+                navItems.push({ id: 'homework', label: '6. การบ้านและคะแนน', activeCls: 'bg-amber-700 text-white shadow-sm', idleCls: 'bg-amber-50 text-amber-950 border border-amber-200 hover:bg-amber-100' });
             }
 
             if (currentTab !== 'replays' && !navItems.some(item => item.id === currentTab)) {
@@ -2334,6 +2928,7 @@
                                         <th class="p-3">เวลาเข้าเรียน</th>
                                         <th class="p-3">เวลาออกเรียน</th>
                                         <th class="p-3">สถานะ</th>
+                                        <th class="p-3">อาจารย์บันทึก</th>
                                     </tr>
                                 </thead>
                                 <tbody class="divide-y divide-cream-200">
@@ -2347,6 +2942,7 @@
                                             <td class="p-3 text-emerald-800 font-semibold">${escapeHTML(rec.checkInTime || '-')}</td>
                                             <td class="p-3 text-sage-800 font-semibold">${escapeHTML(rec.checkOutTime || '-')}</td>
                                             <td class="p-3"><span class="px-2.5 py-1 rounded-full font-bold ${stBadge.badgeClass}">${stBadge.label}</span></td>
+                                            <td class="p-3">${rec.teacherStatus ? `<span class="px-2.5 py-1 rounded-full font-bold ${rec.teacherStatus === 'ขาด' ? 'bg-red-100 text-red-800' : rec.teacherStatus === 'ลา' ? 'bg-sky-100 text-sky-800' : rec.teacherStatus === 'สาย' ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800'}">${escapeHTML(rec.teacherStatus)}</span>${rec.teacherNote ? ` <span class="text-gray-600">${escapeHTML(rec.teacherNote)}</span>` : ''}` : '<span class="text-gray-400">-</span>'}</td>
                                         </tr>
                                         `;
                                     }).join('')}
@@ -2654,6 +3250,10 @@
                 </div>
                 ${renderPasswordManagementSection(role)}
                 `;
+            } else if (currentTab === 'teaching' && canGrade()) {
+                tabContent = renderTeachingTab();
+            } else if (currentTab === 'homework' && role === 'student') {
+                tabContent = renderHomeworkTab();
             } else if (currentTab === 'admin_panel' && role === 'admin') {
                 tabContent = `
                 <div class="space-y-5">
