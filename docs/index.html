@@ -1630,12 +1630,14 @@
                         <div class="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2">
                             ${filteredWeekDays.map(dObj => {
                                 const hasSaved = Boolean(program28JournalNotes[dObj.day]?.truth || program28JournalNotes[dObj.day]?.action);
+                                const isStu = currentSession && currentSession.role === 'student';
+                                const dayChecked = isStu && hasSaved && getPracticeCheck(currentSession.userId, 'j', dObj.day) && !journalNeedsCheck(currentSession.userId, dObj.day, program28JournalNotes[dObj.day]);
                                 const isCur = dObj.day === activeDayObj.day;
                                 return `
                                 <button type="button" onclick="selectProgram28Day(${dObj.day})" class="p-2.5 rounded-xl border text-left transition ${isCur ? 'bg-earth-800 text-white border-earth-800' : hasSaved ? 'bg-emerald-50 border-emerald-300 text-emerald-950' : 'bg-white border-cream-200 text-earth-800 hover:border-sage-600'}">
                                     <div class="flex items-center justify-between font-bold">
                                         <span>วันที่ ${dObj.day}</span>
-                                        ${hasSaved ? `<span class="text-[10px] px-1.5 rounded bg-emerald-600 text-white">บันทึกแล้ว</span>` : ''}
+                                        ${dayChecked ? `<span class="text-[10px] px-1.5 rounded bg-teal-700 text-white">✓ ครูตรวจแล้ว</span>` : hasSaved ? `<span class="text-[10px] px-1.5 rounded bg-emerald-600 text-white">บันทึกแล้ว</span>` : ''}
                                     </div>
                                     <div class="mt-1 font-semibold truncate">${escapeHTML(dObj.title)}</div>
                                 </button>
@@ -1684,6 +1686,7 @@
                                 <button type="button" onclick="saveProgram28DayNote(${activeDayObj.day})" class="w-full py-2.5 rounded-xl bg-sage-600 hover:bg-sage-700 text-white font-bold transition">
                                     บันทึกการเรียนรู้วันที่ ${activeDayObj.day}
                                 </button>
+                                ${currentSession && currentSession.role === 'student' && journalHasContent(activeDayNote) ? (practiceCheckBadge(getPracticeCheck(currentSession.userId, 'j', activeDayObj.day), journalNeedsCheck(currentSession.userId, activeDayObj.day, activeDayNote)) || '<div class="text-[11px] text-gray-500">⏳ บันทึกวันนี้รออาจารย์ตรวจ</div>') : ''}
                             </div>
                         </div>
                     </div>
@@ -1863,6 +1866,7 @@
                                         </div>
                                         <div class="font-bold text-sage-900">${escapeHTML(entry.activity)}</div>
                                         ${entry.reflection ? `<div class="text-gray-700">สภาวธรรม: ${escapeHTML(entry.reflection)}</div>` : ''}
+                                        ${currentSession && currentSession.role === 'student' ? (practiceCheckBadge(getPracticeCheck(currentSession.userId, 'd', entry.id), false) || '<div class="text-[11px] text-gray-500">⏳ รออาจารย์ตรวจ</div>') : ''}
                                     </div>
                                     <button type="button" onclick="removeDaily30PracticeEntry('${escapeHTML(entry.id)}')" class="px-3 py-1.5 rounded-lg bg-red-50 hover:bg-red-100 text-red-700 font-semibold self-start sm:self-center shrink-0">
                                         ลบรายการ
@@ -2045,6 +2049,88 @@
         }
         function subKey(aid, sid) { return `${aid}_${sid}`; }
         function reviewKey(sid, subj, kind) { return `${sid}_${subj}_${kind}`; }
+
+        // ----- สถานะ "อาจารย์ตรวจแล้ว" ของบันทึกปฏิบัติธรรมรายรายการ (เก็บในแท็บ LMS คะแนนอาจารย์) -----
+        // type: 'd' = บันทึกการปฏิบัติในชีวิตประจำวัน (id ของรายการ), 'j' = บันทึกการเรียนรู้โปรแกรม 28 วัน (เลขวัน)
+        function practiceCheckKey(sid, type, id) { return `${sid}_chk_${type}_${id}`; }
+        function getPracticeCheck(sid, type, id) { return (appData.reviews || {})[practiceCheckKey(sid, type, id)] || null; }
+        function journalHasContent(x) { return Boolean(x && (x.truth || x.action || x.discomfort)); }
+        function journalUpdatedAt(sid, day) { const st = (appData.practiceByUser || {})[sid] || {}; return ((st.journal || {})[day] || {}).updatedAt || ''; }
+        function journalNeedsCheck(sid, day, x) {
+            if (!journalHasContent(x)) return false;
+            const c = getPracticeCheck(sid, 'j', day);
+            if (!c) return true;
+            if (!x.updatedAt) return false;
+            return c.seenUpdatedAt ? x.updatedAt !== c.seenUpdatedAt : Boolean(c.at && x.updatedAt > c.at);
+        }
+        function practicePendingItems(sid) {
+            const st = (appData.practiceByUser || {})[sid] || {};
+            const d30 = Array.isArray(st.daily30) ? st.daily30 : [];
+            const journal = st.journal || {};
+            const items = [];
+            let latest = '';
+            d30.forEach(e => {
+                if (e && e.id != null && !getPracticeCheck(sid, 'd', e.id)) items.push({ type: 'd', id: String(e.id) });
+                if (e && (e.date || '') > latest) latest = e.date;
+            });
+            Object.keys(journal).forEach(d => {
+                const x = journal[d];
+                if (journalNeedsCheck(sid, d, x)) items.push({ type: 'j', id: String(d) });
+                const u = String((x && x.updatedAt) || '').slice(0, 10);
+                if (u > latest) latest = u;
+            });
+            return { items, latest };
+        }
+        function practiceCheckBadge(chk, edited) {
+            if (!chk) return '';
+            return `<div class="mt-1.5 p-2 rounded-lg ${edited ? 'bg-amber-50 border border-amber-200 text-amber-900' : 'bg-emerald-50 border border-emerald-200 text-emerald-900'}">
+                <b>${edited ? '✎ แก้ไขหลังอาจารย์ตรวจ' : '✓ อาจารย์ตรวจแล้ว'}</b> • ${escapeHTML(chk.by || '')}${chk.at ? ` • ${formatThaiDate(String(chk.at).slice(0, 10))}` : ''}
+                ${chk.comment ? `<div class="text-gray-800 mt-0.5"><b>ข้อคิดเห็น:</b> ${escapeHTML(chk.comment)}</div>` : ''}
+            </div>`;
+        }
+        window.markPracticeChecked = function(sid, type, id, inputId) {
+            if (!canGrade()) return;
+            const comment = inputId ? (document.getElementById(inputId)?.value || '').trim() : '';
+            appData.reviews = appData.reviews || {};
+            appData.reviews[practiceCheckKey(sid, type, id)] = {
+                studentId: sid, subject: '',
+                kind: type === 'j' ? `ตรวจบันทึก 28 วัน (วันที่ ${id})` : 'ตรวจบันทึกการฝึกประจำวัน',
+                itemType: type, itemId: String(id), comment, seenUpdatedAt: type === 'j' ? journalUpdatedAt(sid, id) : '',
+                by: currentSession.displayName, at: new Date().toISOString()
+            };
+            saveAppData(appData);
+            showToast('บันทึกว่า "ตรวจแล้ว" — นักศึกษาจะเห็นสถานะนี้');
+            renderApp();
+        };
+        window.unmarkPracticeChecked = function(sid, type, id) {
+            if (!canGrade()) return;
+            delete (appData.reviews || {})[practiceCheckKey(sid, type, id)];
+            saveAppData(appData);
+            renderApp();
+        };
+        window.markAllPracticeChecked = function(sid) {
+            if (!canGrade()) return;
+            const { items } = practicePendingItems(sid);
+            if (!items.length) return;
+            const now = new Date().toISOString();
+            items.forEach(it => {
+                appData.reviews[practiceCheckKey(sid, it.type, it.id)] = {
+                    studentId: sid, subject: '',
+                    kind: it.type === 'j' ? `ตรวจบันทึก 28 วัน (วันที่ ${it.id})` : 'ตรวจบันทึกการฝึกประจำวัน',
+                    itemType: it.type, itemId: it.id, comment: '', seenUpdatedAt: it.type === 'j' ? journalUpdatedAt(sid, it.id) : '',
+                    by: currentSession.displayName, at: now
+                };
+            });
+            saveAppData(appData);
+            showToast(`ตรวจแล้ว ${items.length} รายการ`);
+            renderApp();
+        };
+        window.teachRefresh = async function() {
+            showToast('กำลังโหลดข้อมูลล่าสุดจาก Google Sheet…');
+            if (document.activeElement) document.activeElement.blur();
+            await refreshFromServer(true);
+            renderApp();
+        };
         function numVal(v) { const n = Number(v); return Number.isFinite(n) ? n : 0; }
         function hasScore(v) { return v !== '' && v !== null && v !== undefined; }
         function defaultTeachSession() {
@@ -2358,28 +2444,43 @@
 
         function renderTeachPractice() {
             const students = appData.students || [];
-            if (!teachStudentId || !students.some(s => s.id === teachStudentId)) teachStudentId = (students[0] || {}).id || '';
+            const pendingBy = {};
+            students.forEach(s => { pendingBy[s.id] = practicePendingItems(s.id); });
+            const pendingList = students.filter(s => pendingBy[s.id].items.length)
+                .sort((a, b) => String(pendingBy[b.id].latest).localeCompare(String(pendingBy[a.id].latest)));
+            const pendingTotal = pendingList.reduce((a, s) => a + pendingBy[s.id].items.length, 0);
+            if (!teachStudentId || !students.some(s => s.id === teachStudentId)) teachStudentId = (pendingList[0] || students[0] || {}).id || '';
             const st = students.find(s => s.id === teachStudentId) || {};
             const store = (appData.practiceByUser || {})[teachStudentId] || {};
+            const myPending = pendingBy[teachStudentId] ? pendingBy[teachStudentId].items.length : 0;
+            const sidJs = escapeHTML(teachStudentId);
             const d30 = Array.isArray(store.daily30) ? store.daily30 : [];
             const cls = Array.isArray(store.classPractice) ? store.classPractice : [];
             const journal = store.journal || {};
             const d30Mins = d30.reduce((a, x) => a + (Number(x.durationMinutes) || 0), 0);
             const clsMins = cls.reduce((a, x) => a + (Number(x.hours) || 0) * 60 + (Number(x.minutes) || 0), 0);
             const days = new Set(d30.map(x => x.date).filter(Boolean)).size;
-            const journalDays = Object.keys(journal).filter(k => journal[k] && (journal[k].truth || journal[k].action)).sort((a, b) => a - b);
+            const journalDays = Object.keys(journal).filter(k => journalHasContent(journal[k])).sort((a, b) => a - b);
             const curReview = (appData.reviews || {})[reviewKey(teachStudentId, teachSubject, 'practice')] || {};
             const myReviews = SUBJECTS.map(s => ({ s, r: (appData.reviews || {})[reviewKey(teachStudentId, s.code, 'practice')] })).filter(x => x.r);
             return `
             <div class="space-y-4">
+                <div class="p-4 rounded-2xl ${pendingTotal ? 'bg-amber-50 border border-amber-200' : 'bg-emerald-50 border border-emerald-200'} space-y-2">
+                    <div class="flex flex-wrap items-center justify-between gap-2">
+                        <div class="font-bold text-sm ${pendingTotal ? 'text-amber-900' : 'text-emerald-900'}">${pendingTotal ? `🔔 บันทึกปฏิบัติธรรมรอตรวจ ${pendingTotal} รายการ จากนักศึกษา ${pendingList.length} คน` : '✓ ตรวจบันทึกปฏิบัติธรรมครบทุกรายการแล้ว'}</div>
+                        <button type="button" onclick="teachRefresh()" class="px-3 py-1.5 rounded-lg bg-white border border-cream-200 hover:bg-cream-100 font-semibold text-earth-800">🔄 โหลดบันทึกล่าสุด</button>
+                    </div>
+                    ${pendingList.length ? `<div class="flex flex-wrap gap-1.5">${pendingList.map(s => `<button type="button" onclick="teachStudentId = '${escapeHTML(s.id)}'; renderApp();" class="px-2.5 py-1 rounded-full border font-semibold ${s.id === teachStudentId ? 'bg-earth-800 text-white border-earth-800' : 'bg-white text-earth-800 border-amber-300 hover:bg-amber-100'}">${escapeHTML(s.code)} ${escapeHTML(s.name)} <span class="ml-1 px-1.5 rounded-full bg-amber-500 text-white">${pendingBy[s.id].items.length}</span></button>`).join('')}</div>` : ''}
+                </div>
                 <div class="flex flex-col sm:flex-row sm:items-center gap-3">
                     <label class="font-bold text-earth-800 shrink-0">เลือกนักศึกษา:</label>
                     <select onchange="teachStudentId = this.value; renderApp();" class="flex-1 px-4 py-3 rounded-xl border border-cream-200 bg-cream-50 font-semibold">
                         ${students.map(s => {
                             const st2 = (appData.practiceByUser || {})[s.id] || {};
                             const n = Array.isArray(st2.daily30) ? st2.daily30.length : 0;
-                            const reviewed = SUBJECTS.some(x => (appData.reviews || {})[reviewKey(s.id, x.code, 'practice')]);
-                            return `<option value="${escapeHTML(s.id)}" ${s.id === teachStudentId ? 'selected' : ''}>${escapeHTML(s.code)} • ${escapeHTML(s.name)} — ${n} รอบ${reviewed ? ' ✓ ตรวจแล้ว' : ''}</option>`;
+                            const pend = pendingBy[s.id].items.length;
+                            const hasAny = n || Object.keys(st2.journal || {}).some(d => journalHasContent(st2.journal[d]));
+                            return `<option value="${escapeHTML(s.id)}" ${s.id === teachStudentId ? 'selected' : ''}>${escapeHTML(s.code)} • ${escapeHTML(s.name)} — ${n} รอบ${pend ? ` • รอตรวจ ${pend}` : hasAny ? ' • ✓ ตรวจครบ' : ''}</option>`;
                         }).join('')}
                     </select>
                 </div>
@@ -2391,20 +2492,43 @@
                 </div>
                 <div class="grid grid-cols-1 lg:grid-cols-12 gap-4">
                     <div class="lg:col-span-7 space-y-3">
-                        <div class="font-bold text-earth-800">บันทึกการปฏิบัติในชีวิตประจำวัน (${d30.length} รอบ)</div>
-                        <div class="space-y-2 max-h-80 overflow-y-auto pr-1">
-                            ${d30.length === 0 ? '<div class="text-gray-500 py-3 text-center">ยังไม่มีบันทึก</div>' : d30.map(e => `
-                                <div class="p-3 rounded-xl border border-cream-200 bg-cream-50/50">
-                                    <div class="flex flex-wrap gap-2 items-center"><b>${formatThaiDate(e.date)}</b><span class="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-900 font-bold">${escapeHTML(e.startTime || '')}–${escapeHTML(e.endTime || '')} (${formatMinutesToThaiDuration(e.durationMinutes)})</span>${e.programDay ? `<span class="text-sage-800">โปรแกรมวันที่ ${escapeHTML(e.programDay)}</span>` : ''}</div>
-                                    <div class="font-semibold text-sage-900">${escapeHTML(e.activity || '')} <span class="font-normal text-gray-600">• ${escapeHTML(e.place || '')}</span></div>
-                                    ${e.reflection ? `<div class="text-gray-700">สภาวธรรม: ${escapeHTML(e.reflection)}</div>` : ''}
-                                </div>`).join('')}
+                        <div class="flex flex-wrap items-center justify-between gap-2">
+                            <div class="font-bold text-sm text-earth-800">${escapeHTML(st.code || '')} ${escapeHTML(st.name || '')}</div>
+                            ${myPending ? `<button type="button" onclick="markAllPracticeChecked('${sidJs}')" class="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold">✓ ตรวจแล้วทั้งหมด (${myPending} รายการ)</button>` : ''}
                         </div>
                         ${journalDays.length ? `
-                        <div class="font-bold text-earth-800 pt-1">บันทึกโปรแกรม 28 วัน</div>
-                        <div class="space-y-2 max-h-64 overflow-y-auto pr-1">
-                            ${journalDays.map(d => `<div class="p-3 rounded-xl border border-sage-200 bg-sage-50/50"><b>วันที่ ${escapeHTML(d)}</b>${journal[d].truth ? `<div><b>สิ่งที่รู้จริง:</b> ${escapeHTML(journal[d].truth)}</div>` : ''}${journal[d].action ? `<div><b>การกระทำ/คำถาม:</b> ${escapeHTML(journal[d].action)}</div>` : ''}${journal[d].discomfort ? `<div class="text-gray-600"><b>สิ่งไม่สบาย:</b> ${escapeHTML(journal[d].discomfort)}</div>` : ''}</div>`).join('')}
+                        <div class="font-bold text-earth-800">บันทึกการเรียนรู้ โปรแกรม 28 วัน (${journalDays.length} วัน)</div>
+                        <div class="space-y-2 max-h-[28rem] overflow-y-auto pr-1">
+                            ${journalDays.map(d => {
+                                const x = journal[d];
+                                const chk = getPracticeCheck(teachStudentId, 'j', d);
+                                const need = journalNeedsCheck(teachStudentId, d, x);
+                                const inId = `pchk-j-${d}`;
+                                return `<div class="p-3 rounded-xl border ${need ? 'border-amber-300 bg-amber-50/40' : 'border-sage-200 bg-sage-50/50'}">
+                                    <div class="flex flex-wrap items-center gap-2"><b>วันที่ ${escapeHTML(d)}</b>${x.updatedAt ? `<span class="text-gray-500">บันทึกเมื่อ ${formatThaiDate(String(x.updatedAt).slice(0, 10))}</span>` : ''}${need ? '<span class="px-2 py-0.5 rounded-full bg-amber-500 text-white font-bold">รอตรวจ</span>' : ''}</div>
+                                    ${x.truth ? `<div><b>สิ่งที่รู้จริง:</b> ${escapeHTML(x.truth)}</div>` : ''}${x.action ? `<div><b>การกระทำ/คำถาม:</b> ${escapeHTML(x.action)}</div>` : ''}${x.discomfort ? `<div class="text-gray-600"><b>สิ่งไม่สบาย:</b> ${escapeHTML(x.discomfort)}</div>` : ''}
+                                    ${chk ? practiceCheckBadge(chk, need) : ''}
+                                    ${need ? `<div class="mt-2 flex flex-col sm:flex-row gap-2"><input id="${inId}" type="text" placeholder="ข้อคิดเห็นถึงนักศึกษา (ไม่บังคับ)" class="flex-1 px-3 py-1.5 rounded-lg border border-cream-200 bg-white"><button type="button" onclick="markPracticeChecked('${sidJs}', 'j', '${escapeHTML(d)}', '${inId}')" class="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold whitespace-nowrap">✓ ตรวจแล้ว</button></div>`
+                                        : chk ? `<button type="button" onclick="unmarkPracticeChecked('${sidJs}', 'j', '${escapeHTML(d)}')" class="mt-1 text-[11px] text-gray-500 underline">ยกเลิกสถานะตรวจแล้ว</button>` : ''}
+                                </div>`;
+                            }).join('')}
                         </div>` : ''}
+                        <div class="font-bold text-earth-800 pt-1">บันทึกการปฏิบัติในชีวิตประจำวัน (${d30.length} รอบ)</div>
+                        <div class="space-y-2 max-h-[28rem] overflow-y-auto pr-1">
+                            ${d30.length === 0 ? '<div class="text-gray-500 py-3 text-center">ยังไม่มีบันทึก</div>' : d30.map(e => {
+                                const chk = getPracticeCheck(teachStudentId, 'd', e.id);
+                                const inId = `pchk-d-${String(e.id).replace(/[^A-Za-z0-9_-]/g, '')}`;
+                                const idJs = escapeHTML(String(e.id).replace(/'/g, ''));
+                                return `
+                                <div class="p-3 rounded-xl border ${chk ? 'border-cream-200 bg-cream-50/50' : 'border-amber-300 bg-amber-50/40'}">
+                                    <div class="flex flex-wrap gap-2 items-center"><b>${formatThaiDate(e.date)}</b><span class="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-900 font-bold">${escapeHTML(e.startTime || '')}–${escapeHTML(e.endTime || '')} (${formatMinutesToThaiDuration(e.durationMinutes)})</span>${e.programDay ? `<span class="text-sage-800">โปรแกรมวันที่ ${escapeHTML(e.programDay)}</span>` : ''}${chk ? '' : '<span class="px-2 py-0.5 rounded-full bg-amber-500 text-white font-bold">รอตรวจ</span>'}</div>
+                                    <div class="font-semibold text-sage-900">${escapeHTML(e.activity || '')} <span class="font-normal text-gray-600">• ${escapeHTML(e.place || '')}</span></div>
+                                    ${e.reflection ? `<div class="text-gray-700">สภาวธรรม: ${escapeHTML(e.reflection)}</div>` : ''}
+                                    ${chk ? practiceCheckBadge(chk, false) + `<button type="button" onclick="unmarkPracticeChecked('${sidJs}', 'd', '${idJs}')" class="mt-1 text-[11px] text-gray-500 underline">ยกเลิกสถานะตรวจแล้ว</button>`
+                                        : `<div class="mt-2 flex flex-col sm:flex-row gap-2"><input id="${inId}" type="text" placeholder="ข้อคิดเห็นถึงนักศึกษา (ไม่บังคับ)" class="flex-1 px-3 py-1.5 rounded-lg border border-cream-200 bg-white"><button type="button" onclick="markPracticeChecked('${sidJs}', 'd', '${idJs}', '${inId}')" class="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold whitespace-nowrap">✓ ตรวจแล้ว</button></div>`}
+                                </div>`;
+                            }).join('')}
+                        </div>
                         ${cls.length ? `
                         <div class="font-bold text-earth-800 pt-1">ปฏิบัติธรรมในชั้นเรียน (${cls.length} รายการ)</div>
                         <div class="space-y-1.5">${cls.map(c => `<div class="p-2.5 rounded-lg border border-teal-200 bg-teal-50/50">${formatThaiDate(c.date)} • ${escapeHTML(c.sessionTitle || '')} • <b>${escapeHTML(c.hours)} ชม. ${escapeHTML(c.minutes || 0)} น.</b>${c.note ? ` — ${escapeHTML(c.note)}` : ''}</div>`).join('')}</div>` : ''}
@@ -2512,10 +2636,11 @@
         }
 
         function renderTeachingTab() {
+            const pendTotal = (appData.students || []).reduce((a, s) => a + practicePendingItems(s.id).items.length, 0);
             const subTabs = [
                 ['attendance', '✅ เช็กชื่อนักศึกษา'],
                 ['homework', '📝 สั่งและตรวจการบ้าน'],
-                ['practice', '🧘 ตรวจบันทึกปฏิบัติธรรม'],
+                ['practice', `🧘 ตรวจบันทึกปฏิบัติธรรม${pendTotal ? ` (รอตรวจ ${pendTotal})` : ''}`],
                 ['counseling', '💬 ตรวจบันทึกการปรึกษา'],
                 ['grades', '📊 สรุปคะแนนรายวิชา']
             ];
