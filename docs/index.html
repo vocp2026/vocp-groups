@@ -399,6 +399,12 @@
         let syncRetryTimer = null;
         let lastServerJson = '';
 
+        // เวอร์ชัน Lms.gs ขั้นต่ำที่หน้าเว็บนี้ต้องการ (ตรงกับ LMS_VERSION ใน Apps Script)
+        const REQUIRED_SERVER_VERSION = '2026-11-27';
+        let serverVersion = null; // null = ยังไม่รู้, '' = เวอร์ชันเก่าที่ไม่ส่งเลขเวอร์ชัน
+        function serverOutdated() { return serverVersion !== null && serverVersion < REQUIRED_SERVER_VERSION; }
+        const OUTDATED_MSG = 'Apps Script ยังเป็นเวอร์ชันเก่า — การบ้าน คะแนน และสถานะตรวจแล้วจะไม่ถูกบันทึกลง Google Sheet ผู้ดูแลระบบต้องวางไฟล์ Lms.gs ใหม่ แล้วกด จัดการการทำให้ใช้งานได้ → ✏️ → เวอร์ชันใหม่';
+
         async function lmsCall(action, params = {}) {
             if (!SERVER_URL) throw new Error('ยังไม่ได้ตั้งค่า Web App URL ในไฟล์ config.js');
             const body = Object.assign({}, params, { action });
@@ -411,6 +417,7 @@
                 throw new Error('เชื่อมต่อเซิร์ฟเวอร์ไม่ได้ กรุณาตรวจสอบอินเทอร์เน็ต');
             }
             try { d = await res.json(); } catch (e) { throw new Error('เซิร์ฟเวอร์ตอบกลับไม่ถูกต้อง'); }
+            if (d.ok && ['lmsPublic', 'lmsLogin', 'lmsLoad'].includes(action)) serverVersion = String(d.version || '');
             if (!d.ok) {
                 const err = new Error(d.error || 'เกิดข้อผิดพลาด');
                 err.auth = !!d.auth;
@@ -506,8 +513,20 @@
                         else syncSnapshot[c][k] = next[c][k];
                     });
                 });
-                if (r.skipped && r.skipped.length) console.info('รายการที่ไม่มีสิทธิ์บันทึก (ข้าม):', r.skipped);
-                setSyncBadge('saved');
+                if (r.skipped && r.skipped.length) {
+                    console.warn('รายการที่เซิร์ฟเวอร์ไม่บันทึก (ข้าม):', r.skipped);
+                    if (r.skipped.some(x => /\(unknown\)/.test(x))) {
+                        serverVersion = serverVersion || '';
+                        setSyncBadge('error', '⚠️ บางรายการไม่ได้บันทึก — Apps Script เป็นเวอร์ชันเก่า');
+                        showToast(OUTDATED_MSG, 'error');
+                        renderApp();
+                    } else {
+                        setSyncBadge('error', `⚠️ ไม่มีสิทธิ์บันทึก ${r.skipped.length} รายการ`);
+                        showToast(`ระบบไม่บันทึก ${r.skipped.length} รายการ เพราะบัญชีนี้ไม่มีสิทธิ์แก้ไขส่วนนั้น`, 'error');
+                    }
+                } else {
+                    setSyncBadge('saved');
+                }
             } catch (e) {
                 if (e.auth) {
                     handleAuthExpired(e.message);
@@ -3537,6 +3556,7 @@
                     </nav>
                 </header>
                 <main class="flex-1 max-w-7xl w-full mx-auto px-4 py-6">
+                    ${role !== 'student' && serverOutdated() ? `<div class="mb-4 p-4 rounded-2xl bg-red-50 border-2 border-red-300 text-red-900 text-xs font-semibold">⚠️ ${escapeHTML(OUTDATED_MSG)}<div class="font-normal mt-1">เวอร์ชันที่เซิร์ฟเวอร์ใช้อยู่: ${escapeHTML(serverVersion || 'เก่ากว่า 27 พ.ย. 2569')} • ต้องการ: ${REQUIRED_SERVER_VERSION}</div></div>` : ''}
                     ${tabContent}
                 </main>
             </div>
