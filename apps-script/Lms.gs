@@ -117,7 +117,7 @@ function lmsHandle_(body) {
   }
   const user = lmsAuth_(body.token);
   switch (body.action) {
-    case 'lmsLoad': return Object.assign({ ok: true, session: lmsPublicSession_(user) }, lmsData_(user));
+    case 'lmsLoad': return Object.assign({ ok: true, version: LMS_VERSION, session: lmsPublicSession_(user) }, lmsData_(user));
     case 'lmsSave': return withLock_(() => lmsSave_(user, body.changes || {}));
     case 'lmsChangePassword': return withLock_(() => lmsChangePassword_(user, body.oldPassword, body.newPassword));
     case 'lmsLogout':
@@ -130,10 +130,13 @@ function lmsHandle_(body) {
 }
 
 /** ข้อมูลก่อนเข้าสู่ระบบ: ชื่อหลักสูตร + รายชื่อบัญชีอาจารย์/TA (ไม่มีรหัสผ่าน) สำหรับ dropdown */
+/** เวอร์ชันของ Lms.gs — หน้าเว็บใช้ตรวจว่าอัปเดต Apps Script แล้วหรือยัง */
+const LMS_VERSION = '2026-11-27';
+
 function lmsPublic_() {
   const staff = lmsValues_(lmsRead_('staff').map);
   const pick = r => staff.filter(s => s.role === r).map(s => ({ id: s.id, username: s.username, displayName: s.displayName }));
-  return { ok: true, courseInfo: lmsSettings_().courseInfo, teacherAccounts: pick('teacher'), taAccounts: pick('ta') };
+  return { ok: true, version: LMS_VERSION, courseInfo: lmsSettings_().courseInfo, teacherAccounts: pick('teacher'), taAccounts: pick('ta') };
 }
 
 function lmsLogin_(body) {
@@ -175,7 +178,7 @@ function lmsLogin_(body) {
   const token = Utilities.getUuid().replace(/-/g, '') + Utilities.getUuid().replace(/-/g, '');
   cache.put('lms:' + token, JSON.stringify(session), LMS_SESSION_SECONDS);
   log_({ role: session.role === 'admin' ? 'admin' : session.role, name: session.displayName }, 'LMS เข้าสู่ระบบ', session.username, '');
-  return Object.assign({ ok: true, token: token, session: session, mustChangePin: mustChangePin }, lmsData_(session));
+  return Object.assign({ ok: true, version: LMS_VERSION, token: token, session: session, mustChangePin: mustChangePin }, lmsData_(session));
 }
 
 function lmsAuth_(token) {
