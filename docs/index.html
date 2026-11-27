@@ -2036,6 +2036,46 @@
         let teachLogStudent = '';
 
         function canGrade() { return ['teacher', 'admin'].includes(currentSession?.role); }
+        function canViewTeaching() { return ['teacher', 'admin', 'ta'].includes(currentSession?.role); }
+        // ----- การบ้านผูกกับตารางสอน -----
+        function sessionsOfSubject(subj) {
+            return (appData.sessions || []).filter(s => subjectOfSession(s) === subj)
+                .sort((a, b) => String(a.date).localeCompare(String(b.date)));
+        }
+        function defaultAsgSessionId(subj) {
+            const list = sessionsOfSubject(subj);
+            const today = getTodayISO();
+            const past = list.filter(s => s.date <= today);
+            return (past[past.length - 1] || list[0] || {}).id || '';
+        }
+        function nextSessionDateAfter(subj, date) {
+            const n = sessionsOfSubject(subj).find(s => s.date > date);
+            return n ? n.date : '';
+        }
+        function sortAssignments(list) {
+            return list.slice().sort((a, b) => String(a.assignedDate || a.createdAt || '').localeCompare(String(b.assignedDate || b.createdAt || '')));
+        }
+        function assignedLabel(a) {
+            if (!a.assignedDate) return '';
+            const ses = (appData.sessions || []).find(s => s.id === a.sessionId);
+            const m = ses ? toArabicDigits(ses.title || '').match(/ครั้งที่\s*(\d+)/) : null;
+            return `สั่งเมื่อ ${formatThaiDate(a.assignedDate)}${m ? ` (คาบครั้งที่ ${m[1]})` : ''}`;
+        }
+        function studentPendingHomework(uid) {
+            const subs = appData.submissions || {};
+            return (appData.assignments || []).filter(a => { const s = subs[subKey(a.id, uid)]; return !(s && (s.text || s.link)); });
+        }
+        window.onAsgSessionChange = function(sel) {
+            const ses = (appData.sessions || []).find(s => s.id === sel.value);
+            const due = document.getElementById('asg-due');
+            if (ses && due) due.value = nextSessionDateAfter(teachSubject, ses.date) || '';
+        };
+        window.goTab = function(id) {
+            currentTab = id;
+            renderApp();
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+            refreshFromServer(true);
+        };
         function subjectOfSession(ses) {
             const t = toArabicDigits(ses?.title || '');
             const s = SUBJECTS.find(x => t.includes(x.code));
@@ -2212,10 +2252,13 @@
             const detail = (document.getElementById('asg-detail')?.value || '').trim();
             const dueDate = document.getElementById('asg-due')?.value || '';
             const maxScore = Math.max(0, Number(document.getElementById('asg-max')?.value || 10));
+            const sessionId = document.getElementById('asg-session')?.value || '';
+            const ses = (appData.sessions || []).find(s => s.id === sessionId);
             if (!title) { showToast('กรุณาใส่ชื่อการบ้าน', 'error'); return; }
+            if (!ses) { showToast('กรุณาเลือกวันที่สั่งการบ้านตามตารางสอน', 'error'); return; }
             const id = `ASG-${Date.now()}`;
             if (!Array.isArray(appData.assignments)) appData.assignments = [];
-            appData.assignments.push({ id, subject: teachSubject, title, detail, dueDate, maxScore, createdBy: currentSession.displayName, createdAt: new Date().toISOString() });
+            appData.assignments.push({ id, subject: teachSubject, sessionId, assignedDate: ses.date, title, detail, dueDate, maxScore, createdBy: currentSession.displayName, createdAt: new Date().toISOString() });
             teachAssignmentId = id;
             saveAppData(appData);
             showToast(`สั่งการบ้าน "${title}" (${teachSubject}) เรียบร้อยแล้ว`);
@@ -2373,37 +2416,52 @@
         }
 
         function renderTeachHomework() {
-            const asgs = (appData.assignments || []).filter(a => a.subject === teachSubject);
+            const asgs = sortAssignments((appData.assignments || []).filter(a => a.subject === teachSubject));
             if (teachAssignmentId && !asgs.some(a => a.id === teachAssignmentId)) teachAssignmentId = '';
             const active = asgs.find(a => a.id === teachAssignmentId);
             const students = appData.students || [];
             const subCount = a => students.filter(st => { const s = appData.submissions[subKey(a.id, st.id)]; return s && (s.text || s.link); }).length;
+            const editable = canGrade();
+            const subjSessions = sessionsOfSubject(teachSubject);
+            const defSes = defaultAsgSessionId(teachSubject);
+            const defSesObj = subjSessions.find(s => s.id === defSes);
+            const defDue = defSesObj ? nextSessionDateAfter(teachSubject, defSesObj.date) : '';
             return `
             <div class="space-y-4">
                 ${renderSubjectPicker('teachSubject')}
+                <div class="flex justify-end"><button type="button" onclick="teachRefresh()" class="px-3 py-1.5 rounded-lg bg-white border border-cream-200 hover:bg-cream-100 font-semibold text-earth-800">🔄 โหลดข้อมูลล่าสุด</button></div>
                 <div class="grid grid-cols-1 lg:grid-cols-12 gap-4">
+                    ${editable ? `
                     <form onsubmit="createAssignment(event)" class="lg:col-span-5 p-4 rounded-2xl bg-sage-50/70 border border-sage-200 space-y-3">
                         <div class="font-bold text-sm text-earth-800">สั่งการบ้านใหม่ • ${escapeHTML(teachSubject)}</div>
+                        <div><label class="block font-semibold text-gray-700 mb-1">วันที่สั่งการบ้าน (ตามตารางสอน)</label>
+                            <select id="asg-session" onchange="onAsgSessionChange(this)" class="w-full px-3 py-2 rounded-xl border border-cream-200 bg-white">
+                                ${subjSessions.length ? subjSessions.map(s => `<option value="${escapeHTML(s.id)}" ${s.id === defSes ? 'selected' : ''}>${formatThaiDate(s.date)} • ${escapeHTML(s.title || '')}</option>`).join('') : '<option value="">ไม่พบคาบเรียนของวิชานี้ในตารางสอน</option>'}
+                            </select></div>
                         <div><label class="block font-semibold text-gray-700 mb-1">ชื่อการบ้าน</label><input id="asg-title" type="text" required placeholder="เช่น สรุปหลักสติปัฏฐาน 4" class="w-full px-3 py-2 rounded-xl border border-cream-200 bg-white"></div>
                         <div><label class="block font-semibold text-gray-700 mb-1">รายละเอียด / คำสั่ง</label><textarea id="asg-detail" rows="3" placeholder="อธิบายสิ่งที่ต้องทำ ความยาว รูปแบบการส่ง..." class="w-full px-3 py-2 rounded-xl border border-cream-200 bg-white"></textarea></div>
                         <div class="grid grid-cols-2 gap-3">
-                            <div><label class="block font-semibold text-gray-700 mb-1">กำหนดส่ง</label><input id="asg-due" type="date" class="w-full px-3 py-2 rounded-xl border border-cream-200 bg-white"></div>
+                            <div><label class="block font-semibold text-gray-700 mb-1">กำหนดส่ง <span class="font-normal text-gray-500">(ตั้งเป็นคาบถัดไป)</span></label><input id="asg-due" type="date" value="${escapeHTML(defDue)}" class="w-full px-3 py-2 rounded-xl border border-cream-200 bg-white"></div>
                             <div><label class="block font-semibold text-gray-700 mb-1">คะแนนเต็ม</label><input id="asg-max" type="number" min="0" value="10" class="w-full px-3 py-2 rounded-xl border border-cream-200 bg-white"></div>
                         </div>
                         <button type="submit" class="w-full py-2.5 rounded-xl bg-sage-600 hover:bg-sage-700 text-white font-bold">+ สั่งการบ้าน</button>
-                    </form>
+                    </form>` : `
+                    <div class="lg:col-span-5 p-4 rounded-2xl bg-cream-50 border border-cream-200 text-gray-700 self-start">
+                        <div class="font-bold text-sm text-earth-800 mb-1">ผู้ช่วยสอน (TA) • ดูอย่างเดียว</div>
+                        ดูการบ้านที่อาจารย์สั่ง งานที่นักศึกษาส่ง และคะแนนได้ทุกวิชา — การสั่ง ลบ และให้คะแนนทำได้โดยอาจารย์ผู้สอน
+                    </div>`}
                     <div class="lg:col-span-7 space-y-2">
                         <div class="font-bold text-sm text-earth-800">การบ้านวิชา ${escapeHTML(teachSubject)} (${asgs.length} ชิ้น)</div>
                         ${asgs.length === 0 ? '<div class="p-6 text-center text-gray-500 rounded-xl border border-dashed border-cream-200">ยังไม่มีการบ้านในวิชานี้</div>' : asgs.map(a => `
                             <div class="p-3.5 rounded-xl border ${a.id === teachAssignmentId ? 'bg-emerald-50/80 border-emerald-300' : 'bg-white border-cream-200'} flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                                 <div class="min-w-0">
                                     <div class="font-bold text-earth-800 break-words">${escapeHTML(a.title)}</div>
-                                    <div class="text-gray-600">กำหนดส่ง ${a.dueDate ? formatThaiDate(a.dueDate) : '-'} • เต็ม ${escapeHTML(a.maxScore)} คะแนน • ส่งแล้ว ${subCount(a)}/${students.length} คน</div>
+                                    <div class="text-gray-600">${a.assignedDate ? `${assignedLabel(a)} • ` : ''}กำหนดส่ง ${a.dueDate ? formatThaiDate(a.dueDate) : '-'} • เต็ม ${escapeHTML(a.maxScore)} คะแนน • ส่งแล้ว ${subCount(a)}/${students.length} คน${a.createdBy ? ` • โดย ${escapeHTML(a.createdBy)}` : ''}</div>
                                     ${a.detail ? `<div class="text-gray-700 mt-1 break-words">${escapeHTML(a.detail)}</div>` : ''}
                                 </div>
                                 <div class="flex gap-2 shrink-0">
-                                    <button type="button" onclick="teachAssignmentId = '${escapeHTML(a.id)}'; renderApp();" class="px-3.5 py-2 rounded-xl bg-sage-600 hover:bg-sage-700 text-white font-bold">ตรวจ / ให้คะแนน</button>
-                                    <button type="button" onclick="deleteAssignment('${escapeHTML(a.id)}')" class="px-3 py-2 rounded-xl bg-red-50 hover:bg-red-100 text-red-700 font-semibold">ลบ</button>
+                                    <button type="button" onclick="teachAssignmentId = '${escapeHTML(a.id)}'; renderApp();" class="px-3.5 py-2 rounded-xl bg-sage-600 hover:bg-sage-700 text-white font-bold">${editable ? 'ตรวจ / ให้คะแนน' : 'ดูงานที่ส่ง'}</button>
+                                    ${editable ? `<button type="button" onclick="deleteAssignment('${escapeHTML(a.id)}')" class="px-3 py-2 rounded-xl bg-red-50 hover:bg-red-100 text-red-700 font-semibold">ลบ</button>` : ''}
                                 </div>
                             </div>`).join('')}
                     </div>
@@ -2430,9 +2488,13 @@
                                                 ${sub.link && window.normalizeReplayUrl(sub.link) ? `<a href="${escapeHTML(window.normalizeReplayUrl(sub.link))}" target="_blank" rel="noopener noreferrer" class="text-sage-700 underline break-all">${escapeHTML(sub.link)}</a>` : (sub.link ? `<div class="break-all">${escapeHTML(sub.link)}</div>` : '')}
                                             ` : '<span class="text-gray-400">ยังไม่ส่ง</span>'}
                                         </td>
+                                        ${editable ? `
                                         <td class="p-2.5"><input id="grade-score-${i}" type="number" min="0" max="${escapeHTML(active.maxScore)}" step="0.5" value="${escapeHTML(sub.score ?? '')}" class="w-20 px-2 py-1.5 rounded-lg border border-cream-200"></td>
                                         <td class="p-2.5"><textarea id="grade-fb-${i}" rows="2" placeholder="ข้อคิดเห็นถึงนักศึกษา..." class="w-full px-2.5 py-1.5 rounded-lg border border-cream-200">${escapeHTML(sub.feedback || '')}</textarea></td>
-                                        <td class="p-2.5"><button type="button" onclick="gradeSubmission('${escapeHTML(active.id)}', '${escapeHTML(st.id)}', ${i})" class="px-3 py-1.5 rounded-lg ${hasScore(sub.score) ? 'bg-emerald-100 text-emerald-900' : 'bg-sage-600 text-white'} font-bold">${hasScore(sub.score) ? 'แก้ไข' : 'บันทึก'}</button></td>
+                                        <td class="p-2.5"><button type="button" onclick="gradeSubmission('${escapeHTML(active.id)}', '${escapeHTML(st.id)}', ${i})" class="px-3 py-1.5 rounded-lg ${hasScore(sub.score) ? 'bg-emerald-100 text-emerald-900' : 'bg-sage-600 text-white'} font-bold">${hasScore(sub.score) ? 'แก้ไข' : 'บันทึก'}</button></td>` : `
+                                        <td class="p-2.5">${hasScore(sub.score) ? scorePill(sub.score, active.maxScore) : '<span class="text-gray-400">-</span>'}</td>
+                                        <td class="p-2.5 text-gray-700 whitespace-pre-wrap">${escapeHTML(sub.feedback || '')}</td>
+                                        <td class="p-2.5"></td>`}
                                     </tr>`;
                                 }).join('')}
                             </tbody>
@@ -2643,7 +2705,8 @@
                 ['practice', `🧘 ตรวจบันทึกปฏิบัติธรรม${pendTotal ? ` (รอตรวจ ${pendTotal})` : ''}`],
                 ['counseling', '💬 ตรวจบันทึกการปรึกษา'],
                 ['grades', '📊 สรุปคะแนนรายวิชา']
-            ];
+            ].filter(([id]) => canGrade() || id === 'homework');
+            if (!canGrade()) teachSubTab = 'homework';
             const body = teachSubTab === 'homework' ? renderTeachHomework()
                 : teachSubTab === 'practice' ? renderTeachPractice()
                 : teachSubTab === 'counseling' ? renderTeachCounseling()
@@ -2652,7 +2715,7 @@
             return `
             <div class="space-y-5 text-xs">
                 <div class="p-5 rounded-2xl bg-gradient-to-r from-teal-800 via-sage-700 to-earth-800 text-white shadow-sm">
-                    <h2 class="text-lg font-bold">งานสอนของอาจารย์ผู้สอน</h2>
+                    <h2 class="text-lg font-bold">${canGrade() ? 'งานสอนของอาจารย์ผู้สอน' : 'การบ้านของนักศึกษา (ผู้ช่วยสอนดูได้)'}</h2>
                     <p class="text-sage-100">เช็กชื่อนักศึกษา สั่งและตรวจการบ้าน ตรวจแบบบันทึกการปฏิบัติธรรมและการให้การปรึกษา ให้ข้อคิดเห็นและคะแนนแยกรายวิชา — ทุกอย่างบันทึกลง Google Sheet ทันที</p>
                 </div>
                 <div class="flex items-center gap-2 overflow-x-auto pb-1">
@@ -2669,11 +2732,14 @@
             return `
             <div class="space-y-5 text-xs">
                 <div class="p-5 rounded-2xl bg-gradient-to-r from-sage-700 via-teal-700 to-earth-800 text-white shadow-sm">
-                    <h2 class="text-lg font-bold">การบ้านและคะแนนของฉัน</h2>
+                    <div class="flex flex-wrap items-center justify-between gap-2">
+                        <h2 class="text-lg font-bold">การบ้านและคะแนนของฉัน</h2>
+                        <button type="button" onclick="teachRefresh()" class="px-3 py-1.5 rounded-lg bg-white/15 hover:bg-white/25 border border-white/30 font-semibold">🔄 โหลดการบ้านล่าสุด</button>
+                    </div>
                     <p class="text-sage-100">ส่งการบ้านแต่ละวิชา (พิมพ์คำตอบหรือแนบลิงก์ Google Drive) และดูคะแนน/ข้อคิดเห็นจากอาจารย์</p>
                 </div>
                 ${SUBJECTS.map(subj => {
-                    const asgs = (appData.assignments || []).filter(a => a.subject === subj.code);
+                    const asgs = sortAssignments((appData.assignments || []).filter(a => a.subject === subj.code));
                     const sum = subjectSummary(uid, subj.code);
                     const practice = sum.practice;
                     const gradedLogs = (appData.logs || []).filter(l => l.studentId === uid && l.subject === subj.code && (hasScore(l.score) || l.instructorFeedback));
@@ -2696,6 +2762,7 @@
                                 <div class="flex flex-wrap items-center justify-between gap-2">
                                     <div class="font-bold text-earth-800 text-sm">${escapeHTML(a.title)}</div>
                                     <div class="flex flex-wrap gap-1.5">
+                                        ${a.assignedDate ? `<span class="px-2.5 py-0.5 rounded-full bg-white border border-cream-200 font-semibold">${escapeHTML(assignedLabel(a))}</span>` : ''}
                                         <span class="px-2.5 py-0.5 rounded-full ${overdue ? 'bg-red-100 text-red-800' : 'bg-white border border-cream-200'} font-semibold">กำหนดส่ง ${a.dueDate ? formatThaiDate(a.dueDate) : '-'}</span>
                                         <span class="px-2.5 py-0.5 rounded-full ${sent ? 'bg-sage-100 text-sage-900' : 'bg-gray-100 text-gray-600'} font-semibold">${sent ? 'ส่งแล้ว' : 'ยังไม่ส่ง'}</span>
                                         ${scorePill(sub.score, a.maxScore)}
@@ -2816,11 +2883,12 @@
             if (role === 'admin') {
                 navItems.push({ id: 'admin_panel', label: '6. จัดการระบบ (Admin)', activeCls: 'bg-earth-700 text-white shadow-sm', idleCls: 'bg-cream-100 text-earth-800 border border-cream-200 hover:bg-cream-200' });
             }
-            if (canGrade()) {
-                navItems.push({ id: 'teaching', label: `${role === 'admin' ? '7' : '6'}. งานสอน (อาจารย์)`, activeCls: 'bg-amber-700 text-white shadow-sm', idleCls: 'bg-amber-50 text-amber-950 border border-amber-200 hover:bg-amber-100' });
+            if (canViewTeaching()) {
+                navItems.push({ id: 'teaching', label: role === 'ta' ? '6. การบ้านนักศึกษา (TA)' : `${role === 'admin' ? '7' : '6'}. งานสอน (อาจารย์)`, activeCls: 'bg-amber-700 text-white shadow-sm', idleCls: 'bg-amber-50 text-amber-950 border border-amber-200 hover:bg-amber-100' });
             }
             if (role === 'student') {
-                navItems.push({ id: 'homework', label: '6. การบ้านและคะแนน', activeCls: 'bg-amber-700 text-white shadow-sm', idleCls: 'bg-amber-50 text-amber-950 border border-amber-200 hover:bg-amber-100' });
+                const hwPend = studentPendingHomework(currentSession.userId).length;
+                navItems.push({ id: 'homework', label: `6. การบ้านและคะแนน${hwPend ? ` 🔔 ${hwPend}` : ''}`, activeCls: 'bg-amber-700 text-white shadow-sm', idleCls: 'bg-amber-50 text-amber-950 border border-amber-200 hover:bg-amber-100' });
             }
 
             if (currentTab !== 'replays' && !navItems.some(item => item.id === currentTab)) {
@@ -2836,8 +2904,17 @@
                 const totalLogs = role === 'student'
                     ? (appData.logs || []).filter(l => l.studentId === currentSession.userId).length
                     : (appData.logs || []).length;
+                const hwPendList = role === 'student' ? sortAssignments(studentPendingHomework(currentSession.userId)) : [];
                 tabContent = `
                 <div class="space-y-6">
+                    ${hwPendList.length ? `
+                    <div class="p-4 rounded-2xl bg-amber-50 border border-amber-200 text-xs space-y-2">
+                        <div class="flex flex-wrap items-center justify-between gap-2">
+                            <div class="font-bold text-sm text-amber-900">🔔 การบ้านที่ยังไม่ได้ส่ง ${hwPendList.length} ชิ้น</div>
+                            <button type="button" onclick="goTab('homework')" class="px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-bold">ไปที่หน้าส่งการบ้าน →</button>
+                        </div>
+                        <div class="space-y-1">${hwPendList.map(a => `<div><b>${escapeHTML(a.subject)}</b> ${escapeHTML(a.title)} <span class="text-gray-600">• ${a.assignedDate ? escapeHTML(assignedLabel(a)) + ' • ' : ''}กำหนดส่ง ${a.dueDate ? formatThaiDate(a.dueDate) : '-'}</span></div>`).join('')}</div>
+                    </div>` : ''}
                     <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                         <div class="bg-white p-5 rounded-2xl border border-cream-200">
                             <div class="text-xs text-gray-500">จำนวนนักศึกษา ป.จว. รุ่นที่ 1</div>
@@ -3375,7 +3452,7 @@
                 </div>
                 ${renderPasswordManagementSection(role)}
                 `;
-            } else if (currentTab === 'teaching' && canGrade()) {
+            } else if (currentTab === 'teaching' && canViewTeaching()) {
                 tabContent = renderTeachingTab();
             } else if (currentTab === 'homework' && role === 'student') {
                 tabContent = renderHomeworkTab();
@@ -3452,7 +3529,7 @@
                     <nav class="bg-white/95 backdrop-blur border-t border-cream-200">
                         <div class="max-w-7xl mx-auto px-4 py-2.5 flex items-center gap-2 overflow-x-auto text-xs font-bold">
                             ${navItems.map(item => `
-                                <button type="button" onclick="currentTab = '${item.id}'; renderApp();" class="px-4 py-2 rounded-xl whitespace-nowrap transition ${currentTab === item.id ? item.activeCls : item.idleCls}">
+                                <button type="button" onclick="goTab('${item.id}')" class="px-4 py-2 rounded-xl whitespace-nowrap transition ${currentTab === item.id ? item.activeCls : item.idleCls}">
                                     ${item.label}
                                 </button>
                             `).join('')}
